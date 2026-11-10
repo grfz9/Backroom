@@ -145,3 +145,41 @@ export function panelTexture(): THREE.Texture {
     g.strokeRect(0, 0, s, s);
   }, 44);
 }
+
+/** Chalk arrow pointing toward +u, on a transparent background. */
+export function arrowTexture(): THREE.Texture {
+  return make(128, (g, s, r) => {
+    g.clearRect(0, 0, s, s);
+    g.strokeStyle = 'rgba(240,238,225,0.95)';
+    g.lineCap = 'round';
+    for (let pass = 0; pass < 3; pass++) {     // several shaky strokes look like chalk
+      g.lineWidth = 5 + r.next() * 3;
+      const j = (): number => (r.next() - 0.5) * 5;
+      g.beginPath();
+      g.moveTo(14 + j(), 64 + j());
+      g.lineTo(112 + j(), 64 + j());
+      g.moveTo(80 + j(), 34 + j());
+      g.lineTo(114 + j(), 64 + j());
+      g.lineTo(80 + j(), 94 + j());
+      g.stroke();
+    }
+  }, 55);
+}
+
+/** Service door with its green « SORTIE » sign. */
+export function exitTexture(): THREE.Texture {
+  return make(256, (g, s) => {
+    g.fillStyle = '#3d423f';
+    g.fillRect(0, 0, s, s);
+    g.fillStyle = '#565d59';
+    g.fillRect(14, 60, s - 28, s - 60);
+    g.fillStyle = '#23c75a';
+    g.fillRect(40, 8, s - 80, 40);
+    g.fillStyle = '#eafff0';
+    g.font = 'bold 30px monospace';
+    g.textAlign = 'center';
+    g.fillText('SORTIE', s / 2, 39);
+    g.fillStyle = '#1b1d1c';
+    g.fillRect(40, 150, s - 80, 10);          // panic bar
+  }, 66);
+}

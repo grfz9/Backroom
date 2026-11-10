@@ -25,6 +25,17 @@ const mod = (a: number, n: number): number => ((a % n) + n) % n;
 
 export interface Halls {
   readonly seed: number;
+  /** Floor number, 0 = first. Deeper floors are darker and their exit is farther. */
+  readonly depth: number;
+  /** Cell of the exit door. */
+  readonly exitX: number;
+  readonly exitZ: number;
+  /** Direction (radians, atan2(dz, dx)) of a chalk arrow drawn on the floor of this cell, or null. */
+  arrow(ix: number, iz: number): number | null;
+  /** True if a body can step from cell (ix,iz) to the adjacent cell (ix+dx, iz+dz). */
+  open(ix: number, iz: number, dx: number, dz: number): boolean;
+  /** True if no wall stands between two points (pillars are ignored). */
+  los(ax: number, az: number, bx: number, bz: number): boolean;
   /** Wall on the north edge of cell (ix,iz): along z = iz*CELL. */
   wallN(ix: number, iz: number): boolean;
   /** Wall on the west edge of cell (ix,iz): along x = ix*CELL. */
@@ -38,7 +49,7 @@ export interface Halls {
   move(x: number, z: number, dx: number, dz: number, r: number, out: { x: number; z: number }): void;
 }
 
-export function createHalls(seed: number): Halls {
+export function createHalls(seed: number, depth = 0): Halls {
   const sA = mix32(seed ^ 0x1111), sB = mix32(seed ^ 0x2222), sC = mix32(seed ^ 0x3333);
   const sD = mix32(seed ^ 0x4444), sL = mix32(seed ^ 0x5555), sK = mix32(seed ^ 0x6666);
 
@@ -66,8 +77,14 @@ export function createHalls(seed: number): Halls {
     return toUnit(mix32(h ^ 0x9e3779b1)) < 0.12 + 0.6 * dens;
   }
 
-  // Keep the spawn cell (0,0) and its surroundings free of surprises.
-  const nearSpawn = (ix: number, iz: number): boolean => ix >= -1 && ix <= 1 && iz >= -1 && iz <= 1;
+  // The exit lies in a seed-dependent direction, farther away on deeper floors.
+  const exitAngle = toUnit(hash1(seed, 91)) * Math.PI * 2;
+  const exitDist = 34 + depth * 7;
+  const exitX = Math.round(Math.cos(exitAngle) * exitDist), exitZ = Math.round(Math.sin(exitAngle) * exitDist);
+
+  // Keep the spawn cell (0,0), the exit cell and their surroundings free of surprises.
+  const nearSpawn = (ix: number, iz: number): boolean =>
+    (Math.abs(ix) <= 1 && Math.abs(iz) <= 1) || (Math.abs(ix - exitX) <= 1 && Math.abs(iz - exitZ) <= 1);
 
   const rawN = (ix: number, iz: number): boolean =>
     !(nearSpawn(ix, iz) && nearSpawn(ix, iz - 1)) && segWall(sA, iz, ix, density(ix, iz));
@@ -87,7 +104,7 @@ export function createHalls(seed: number): Halls {
     if (mod(ix, 2) !== 0 || mod(iz, 2) !== 0) return LIGHT_NONE;
     if (nearSpawn(ix, iz)) return LIGHT_STEADY;
     const r = toUnit(hash2(sL, ix, iz));
-    if (noise(sK, ix / 9, iz / 9) > 0.7) return r < 0.72 ? LIGHT_DEAD : r < 0.86 ? LIGHT_DYING : LIGHT_FLICKER;
+    if (noise(sK, ix / 9, iz / 9) > 0.7 - depth * 0.05) return r < 0.72 ? LIGHT_DEAD : r < 0.86 ? LIGHT_DYING : LIGHT_FLICKER;
     return r < 0.76 ? LIGHT_STEADY : r < 0.9 ? LIGHT_FLICKER : r < 0.94 ? LIGHT_DYING : LIGHT_DEAD;
   }
 
@@ -155,5 +172,47 @@ export function createHalls(seed: number): Halls {
     }
   }
 
-  return { seed, wallN, wallW, pillar, light, lightLevel, move };
+  function arrow(ix: number, iz: number): number | null {
+    if (toUnit(hash2(sK ^ 0x77, ix, iz)) > 0.04 || nearSpawn(ix, iz) || pillar(ix, iz)) {
+      // Always leave one arrow next to the spawn so the player learns what to look for.
+      if (ix !== 0 || iz !== -1) return null;
+    }
+    const jitter = (toUnit(hash2(sK ^ 0x99, ix, iz)) - 0.5) * 0.5;
+    return Math.atan2(exitZ - iz, exitX - ix) + jitter;
+  }
+
+  function open(ix: number, iz: number, dx: number, dz: number): boolean {
+    if (pillar(ix + dx, iz + dz)) return false;
+    if (dz === -1) return !wallN(ix, iz);
+    if (dz === 1) return !wallN(ix, iz + 1);
+    if (dx === -1) return !wallW(ix, iz);
+    return !wallW(ix + 1, iz);
+  }
+
+  function los(ax: number, az: number, bx: number, bz: number): boolean {
+    const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.25));
+    let cx = Math.floor(ax / CELL), cz = Math.floor(az / CELL);
+    for (let i = 1; i <= n; i++) {
+      const nx = Math.floor((ax + ((bx - ax) * i) / n) / CELL), nz = Math.floor((az + ((bz - az) * i) / n) / CELL);
+      if (nx !== cx && nz !== cz) {
+        // Diagonal step: blocked unless one of the two L-shaped ways is free.
+        const viaX = wallFree(cx, cz, nx - cx, 0) && wallFree(nx, cz, 0, nz - cz);
+        const viaZ = wallFree(cx, cz, 0, nz - cz) && wallFree(cx, nz, nx - cx, 0);
+        if (!viaX && !viaZ) return false;
+      } else if (nx !== cx) {
+        if (!wallFree(cx, cz, nx - cx, 0)) return false;
+      } else if (nz !== cz && !wallFree(cx, cz, 0, nz - cz)) return false;
+      cx = nx;
+      cz = nz;
+    }
+    return true;
+  }
+  function wallFree(ix: number, iz: number, dx: number, dz: number): boolean {
+    if (dz === -1) return !wallN(ix, iz);
+    if (dz === 1) return !wallN(ix, iz + 1);
+    if (dx === -1) return !wallW(ix, iz);
+    return !wallW(ix + 1, iz);
+  }
+
+  return { seed, depth, exitX, exitZ, wallN, wallW, pillar, light, lightLevel, move, arrow, open, los };
 }

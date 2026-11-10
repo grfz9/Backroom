@@ -176,6 +176,39 @@ export class GameAudio {
     }
   }
 
+  /** The entity has seen the player: a tearing shriek. */
+  sting(): void {
+    if (!this.ctx) return;
+    this.burst(2600, 4, 0.9, 0.5, 0, 'bandpass');
+    this.burst(900, 2, 1.2, 0.4, 0, 'bandpass', 0.05);
+    this.thump(60, 0.8, 0.5);
+  }
+
+  /** Paper rustling: the entity is moving nearby. `near` 0..1, `pan` -1..1. */
+  rustle(near: number, pan: number): void {
+    if (this.ctx) this.burst(3000 + Math.random() * 2500, 1.5, 0.12 + Math.random() * 0.15, 0.03 + near * 0.16, pan, 'highpass');
+  }
+
+  heartbeat(strength: number): void {
+    if (!this.ctx) return;
+    this.thump(52, 0.14, 0.35 * strength);
+    this.thump(46, 0.16, 0.25 * strength, 0, 0.17);
+  }
+
+  /** Caught: the signal dies. */
+  death(): void {
+    if (!this.ctx) return;
+    this.burst(1800, 0.5, 1.6, 0.7, 0, 'bandpass');
+    this.thump(40, 1.5, 0.8);
+  }
+
+  /** Heavy door: the way out of the floor. */
+  door(): void {
+    if (!this.ctx) return;
+    this.thump(55, 0.6, 0.6);
+    this.burst(500, 0.8, 0.5, 0.3, 0, 'lowpass', 0.05);
+  }
+
   /**
    * @param light  illumination at the listener (0 = dark zone, ~1 = under the neons)
    * @param flickering true while a nearby tube is stuttering

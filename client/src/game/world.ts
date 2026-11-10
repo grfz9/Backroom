@@ -7,7 +7,7 @@ import * as THREE from 'three';
 import { CELL, CHUNK, CHUNK_SIZE } from '@shared/constants';
 import { CEILING, LIGHT_NONE, PILLAR_HALF, WALL_T, type Halls } from '@shared/levels/halls';
 import { SURFACE_FRAG, SURFACE_VERT } from './shaders';
-import { carpetTexture, ceilingTexture, panelTexture, wallpaperTexture } from './textures';
+import { arrowTexture, carpetTexture, ceilingTexture, exitTexture, panelTexture, wallpaperTexture } from './textures';
 
 const GRID = 64;                 // light grid side, in cells (128 m around the camera)
 const LOAD_RADIUS = 2;           // chunks
@@ -62,7 +62,7 @@ export class WorldView {
   private chunks = new Map<string, THREE.Mesh[]>();
   private queue: Array<[number, number]> = [];
   private materials: THREE.ShaderMaterial[] = [];
-  private mats: { floor: THREE.ShaderMaterial; ceil: THREE.ShaderMaterial; wall: THREE.ShaderMaterial; panel: THREE.ShaderMaterial };
+  private mats: Record<'floor' | 'ceil' | 'wall' | 'panel' | 'arrow' | 'exit', THREE.ShaderMaterial>;
   private gridData = new Uint8Array(GRID * GRID * 4);
   private gridTex = new THREE.DataTexture(this.gridData, GRID, GRID, THREE.RGBAFormat);
   private gridOrigin = new THREE.Vector2();
@@ -87,7 +87,15 @@ export class WorldView {
       this.materials.push(m);
       return m;
     };
-    this.mats = { floor: mk(carpetTexture(), 0), ceil: mk(ceilingTexture(), 0), wall: mk(wallpaperTexture(), 0), panel: mk(panelTexture(), 1) };
+    this.mats = {
+      floor: mk(carpetTexture(), 0), ceil: mk(ceilingTexture(), 0), wall: mk(wallpaperTexture(), 0),
+      panel: mk(panelTexture(), 1), arrow: mk(arrowTexture(), 2), exit: mk(exitTexture(), 3),
+    };
+  }
+
+  /** Surface material lit like the walls — reused for the entity, which is made of wallpaper. */
+  get wallMaterial(): THREE.ShaderMaterial {
+    return this.mats.wall;
   }
 
   get chunkCount(): number {
@@ -97,6 +105,7 @@ export class WorldView {
   private buildChunk(cx: number, cz: number): THREE.Mesh[] {
     const h = this.halls, x0 = cx * CHUNK_SIZE, z0 = cz * CHUNK_SIZE, S = CHUNK_SIZE, t = WALL_T / 2;
     const floor = new QuadBuffer(), ceil = new QuadBuffer(), wall = new QuadBuffer(), panel = new QuadBuffer();
+    const arrow = new QuadBuffer(), exit = new QuadBuffer();
     // Lighting is per fragment, so floor and ceiling are a single quad each.
     floor.quad(x0, 0, z0, 0, 0, S, S, 0, 0, 0, 0, CHUNK, CHUNK);
     ceil.quad(x0, CEILING, z0, S, 0, 0, 0, 0, S, 0, 0, CHUNK, CHUNK);
@@ -108,9 +117,23 @@ export class WorldView {
       const mx = x + CELL / 2, mz = z + CELL / 2;
       if (h.pillar(ix, iz)) box(wall, mx - PILLAR_HALF, mz - PILLAR_HALF, mx + PILLAR_HALF, mz + PILLAR_HALF);
       if (h.light(ix, iz) !== LIGHT_NONE) panel.quad(mx - 0.6, CEILING - 0.01, mz - 0.3, 1.2, 0, 0, 0, 0, 0.6, 0, 0, 1, 1);
+      const dir = h.arrow(ix, iz);
+      if (dir !== null) {
+        // Flat quad on the carpet, texture +u along the arrow direction.
+        const fx = Math.cos(dir), fz = Math.sin(dir), L = 0.9, W = 0.5;
+        arrow.quad(mx - (fx * L + fz * W) / 2, 0.012, mz - (fz * L - fx * W) / 2, fx * L, 0, fz * L, fz * W, 0, -fx * W, 0, 0, 1, 1);
+      }
+      if (ix === h.exitX && iz === h.exitZ) {
+        // Free-standing service door: a slab with the door texture on its four sides.
+        const a = 0.55, b = 0.12, H = 2.2;
+        exit.quad(mx - a, 0, mz + b, 2 * a, 0, 0, 0, H, 0, 0, 0, 1, 1);
+        exit.quad(mx + a, 0, mz - b, -2 * a, 0, 0, 0, H, 0, 0, 0, 1, 1);
+        exit.quad(mx + a, 0, mz + b, 0, 0, -2 * b, 0, H, 0, 0, 0, 0.1, 1);
+        exit.quad(mx - a, 0, mz - b, 0, 0, 2 * b, 0, H, 0, 0, 0, 0.1, 1);
+      }
     }
     const out: THREE.Mesh[] = [];
-    for (const [q, m] of [[floor, this.mats.floor], [ceil, this.mats.ceil], [wall, this.mats.wall], [panel, this.mats.panel]] as const) {
+    for (const [q, m] of [[floor, this.mats.floor], [ceil, this.mats.ceil], [wall, this.mats.wall], [panel, this.mats.panel], [arrow, this.mats.arrow], [exit, this.mats.exit]] as const) {
       const mesh = q.build(m);
       if (mesh) {
         out.push(mesh);

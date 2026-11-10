@@ -21,7 +21,7 @@ Puis ouvrir http://localhost:5173. Vérifications : `npm run check` (types + tes
 |---|---|
 | Phase 0 — conception, contrats, socle | ✅ terminé |
 | 1 — Seul dans les Couloirs | ✅ version jouable (voir ci-dessous) |
-| 2 — La première entité | à faire |
+| 2 — La première entité | ✅ fait en version compacte (Rôdeur, mort, sortie, 5 étages, fin) |
 | 3 — À plusieurs | à faire |
 | 4 — Niveaux 1 à 3, objets, santé mentale | à faire |
 | 5 — Niveaux 4 à 7, entités, énigmes coop | à faire |
@@ -66,6 +66,26 @@ d'avoir livré, et le directeur a écrit lui-même une version compacte et jouab
 
 **Reprise** : les briefs `docs/briefs/J1A-*` et `J1B-*` restent valables. Des worktrees d'agents inachevés
 existent localement dans `.claude/worktrees/` (non poussés, non vérifiés).
+
+### Jeu complet jouable (jalons 1 + 2, version compacte)
+
+Boucle de jeu complète en solo, du titre à l'écran de fin.
+
+- **Objectif** : trouver la porte de service « SORTIE » de l'étage. Des flèches à la craie au sol
+  indiquent sa direction (F3 affiche la distance, pour le test).
+- **5 étages** de plus en plus sombres, sortie de plus en plus loin, Rôdeur plus rapide et plus précoce.
+- **Le Rôdeur** (`shared/src/sim/prowler.ts`) : apparaît après ~50 s hors de vue, rôde, va voir les bruits
+  (course 15 m, marche 6 m, accroupi 1,5 m), traque à vue (22 m si vous êtes éclairé, 9 m dans le noir
+  lampe éteinte), abandonne après 3,5 s sans vous voir. Froissement de papier, battements de cœur et
+  image qui se dégrade quand il approche.
+- **Mort** : écran « SIGNAL PERDU », recommencer l'étage. **Sauvegarde** : « Continuer » sur le titre.
+- **Fin** : après le 5ᵉ étage, écran « FIN DE BANDE » avec durée et nombre de morts.
+
+**À tester** : jouer une partie entière ; s'accroupir et éteindre la lampe pour semer le Rôdeur ;
+mourir puis recommencer ; quitter puis « Continuer ».
+
+**Non vérifié** : l'aspect de la porte de sortie n'a pas été contrôlé sur capture (son fonctionnement
+est testé) ; l'équilibrage (durée d'un étage, dangerosité) n'a pas été éprouvé par un vrai joueur.
 
 ## Décisions du directeur (rulings)
 

@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { CELL, DT, PLAYER } from '@shared/constants';
 import { createHalls, LIGHT_DYING, LIGHT_FLICKER, type Halls } from '@shared/levels/halls';
 import { hashString } from '@shared/math/rng';
+import { createProwler, stepProwler, type Prowler } from '@shared/sim/prowler';
 import type { ActionName } from './core/contracts';
 import { createSettingsStore } from './core/settings';
 import { GameAudio, type StepMode } from './game/audio';
@@ -33,7 +34,10 @@ const target = new THREE.WebGLRenderTarget(2, 2, { depthBuffer: true });
 const postMaterial = new THREE.ShaderMaterial({
   vertexShader: POST_VERT,
   fragmentShader: POST_FRAG,
-  uniforms: { tScene: { value: target.texture }, uTime: { value: 0 }, uVhs: { value: 0 }, uRes: { value: new THREE.Vector2() } },
+  uniforms: {
+    tScene: { value: target.texture }, uTime: { value: 0 }, uVhs: { value: 0 }, uRes: { value: new THREE.Vector2() },
+    uGlitch: { value: 0 }, uFade: { value: 0 },
+  },
   depthTest: false,
 });
 const postScene = new THREE.Scene();
@@ -56,13 +60,40 @@ resize();
 
 // --- Game state ---------------------------------------------------------------
 
-type Screen = 'title' | 'playing' | 'paused';
+type Screen = 'title' | 'playing' | 'paused' | 'dead' | 'end';
+/** Number of floors to go down before the tape ends. */
+const FLOORS = 5;
+const SAVE_KEY = 'liminal.run.v1';
 let screen: Screen = 'title';
 let seedText = 'liminal';
+let depth = 0;
 let halls: Halls = createHalls(hashString(seedText));
 let world = new WorldView(halls);
 scene.add(world.group);
-let time = 0;
+let prowler: Prowler = createProwler(halls);
+let time = 0, runTime = 0, deaths = 0;
+let glitch = 0, fade = 0, heart = 0, rustle = 0;
+const floorName = (d: number): string => (d === 0 ? 'REZ-DE-COULOIR' : `ÉTAGE −${d}`);
+
+/** Le Rôdeur: a tall, stooped figure cut out of the level's own wallpaper. */
+const entity = new THREE.Group();
+function buildEntity(): void {
+  entity.clear();
+  const part = (w: number, h: number, d: number, x: number, y: number, z: number, tilt = 0): void => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), world.wallMaterial);
+    m.position.set(x, y, z);
+    m.rotation.x = tilt;
+    entity.add(m);
+  };
+  part(0.42, 1.25, 0.2, 0, 1.45, 0, 0.12);        // torso, leaning forward
+  part(0.26, 0.34, 0.24, 0, 2.25, -0.16, 0.5);    // head pressed under the ceiling
+  part(0.13, 0.9, 0.13, -0.12, 0.45, 0.05);       // legs
+  part(0.13, 0.9, 0.13, 0.12, 0.45, 0.05);
+  part(0.09, 1.7, 0.09, -0.3, 1.2, -0.1, 0.15);   // arms that reach the knees
+  part(0.09, 1.7, 0.09, 0.3, 1.2, -0.1, 0.15);
+  scene.add(entity);
+}
+buildEntity();
 
 const player = {
   x: CELL / 2, z: CELL / 2, px: CELL / 2, pz: CELL / 2,
@@ -72,14 +103,18 @@ const player = {
 };
 const moved = { x: 0, z: 0 };
 
-function loadLevel(text: string): void {
+function loadLevel(text: string, floor: number): void {
   scene.remove(world.group);
   world.dispose();
   seedText = text;
-  halls = createHalls(hashString(text));
+  depth = floor;
+  halls = createHalls((hashString(text) ^ Math.imul(floor, 0x9e3779b1)) >>> 0, floor);
   world = new WorldView(halls);
   scene.add(world.group);
+  prowler = createProwler(halls);
+  buildEntity();
   time = 0;
+  fade = 1;
   Object.assign(player, {
     x: CELL / 2, z: CELL / 2, px: CELL / 2, pz: CELL / 2, vx: 0, vz: 0, yaw: 0, pitch: 0,
     crouch: 0, stamina: PLAYER.staminaMax, exhausted: false, cooldown: 0, stepDist: 0, steps: 0, speed: 0, flashlight: false,
@@ -96,7 +131,7 @@ const locked = (): boolean => NOLOCK || document.pointerLockElement === canvas;
 
 function setScreen(next: Screen): void {
   screen = next;
-  ui.show(next, seedText);
+  ui.show(next, seedText, floorName(depth));
   if (next !== 'playing') keys.clear();
 }
 
@@ -110,25 +145,84 @@ function lock(): void {
 const ui = new GameUI(document.getElementById('ui')!, settings, {
   onStart(text) {
     audio.start();
-    loadLevel(text);
-    setScreen('playing');
-    lock();
+    runTime = deaths = 0;
+    startFloor(text, 0);
+  },
+  onContinue() {
+    const save = loadSave();
+    if (!save) return;
+    audio.start();
+    runTime = save.runTime;
+    deaths = save.deaths;
+    startFloor(save.seedText, save.depth);
+  },
+  onRetry() {
+    startFloor(seedText, depth);
   },
   onResume() {
     setScreen('playing');
     lock();
   },
   onQuit() {
-    loadLevel('liminal');
+    loadLevel('liminal', 0);
     setScreen('title');
+    refreshContinue();
   },
 });
+
+interface Save { seedText: string; depth: number; runTime: number; deaths: number }
+function loadSave(): Save | null {
+  try {
+    return JSON.parse(localStorage.getItem(SAVE_KEY) ?? 'null') as Save | null;
+  } catch {
+    return null;
+  }
+}
+function refreshContinue(): void {
+  const save = loadSave();
+  ui.setContinue(save && save.depth > 0 ? `CONTINUER — ${floorName(save.depth)}` : null);
+}
+refreshContinue();
+
+function startFloor(text: string, floor: number): void {
+  loadLevel(text, floor);
+  localStorage.setItem(SAVE_KEY, JSON.stringify({ seedText: text, depth: floor, runTime, deaths } satisfies Save));
+  setScreen('playing');
+  lock();
+  ui.message(floor === 0
+    ? 'TROUVEZ LA PORTE DE SERVICE.\nL\'ÉQUIPE 7 A LAISSÉ DES FLÈCHES À LA CRAIE.'
+    : `${floorName(floor)}\nPLUS SOMBRE. IL VOUS ENTEND.`);
+}
+
+function die(): void {
+  deaths++;
+  audio.death();
+  glitch = 1;
+  screen = 'dead';
+  ui.show('dead', seedText, `Le Rôdeur vous a trouvé — ${floorName(depth)}.\nIl voit ce qui est éclairé et entend ce qui court.`);
+  keys.clear();
+  if (!NOLOCK) document.exitPointerLock();
+}
+
+function reachExit(): void {
+  audio.door();
+  if (depth + 1 < FLOORS) {
+    startFloor(seedText, depth + 1);
+    return;
+  }
+  localStorage.removeItem(SAVE_KEY);
+  screen = 'end';
+  const m = Math.floor(runTime / 60), sec = Math.floor(runTime % 60);
+  ui.show('end', seedText, `BANDE N° 12 — FIN DE L'ENREGISTREMENT\n\nSeed : ${seedText}\nDurée : ${m} min ${String(sec).padStart(2, '0')} s — Signal perdu ${deaths} fois\n\nLa bande a été retrouvée dans un bâtiment\noù l'équipe 12 n'est jamais entrée.`);
+  keys.clear();
+  if (!NOLOCK) document.exitPointerLock();
+}
 
 document.addEventListener('pointerlockchange', () => {
   if (screen === 'playing' && !locked()) setScreen('paused');
 });
 window.addEventListener('blur', () => keys.clear());
-window.addEventListener('beforeunload', (e) => { if (screen !== 'title') e.preventDefault(); });
+window.addEventListener('beforeunload', (e) => { if (screen === 'playing' || screen === 'paused') e.preventDefault(); });
 window.addEventListener('pointerdown', () => audio.start(), { once: true });
 
 document.addEventListener('keydown', (e) => {
@@ -137,7 +231,7 @@ document.addEventListener('keydown', (e) => {
     settings.set({ showFps: !settings.get().showFps });
     return;
   }
-  if (screen === 'title') return;
+  if (screen !== 'playing' && screen !== 'paused') return;
   if (NOLOCK && isAction('pause', e.code)) setScreen(screen === 'playing' ? 'paused' : 'playing');
   if (screen !== 'playing') return;
   if (isAction('flashlight', e.code) && !e.repeat) player.flashlight = !player.flashlight;
@@ -206,6 +300,16 @@ function tick(): void {
     audio.step(mode, p.steps++ % 2 === 0);
   }
   time += DT;
+  runTime += DT;
+
+  // The entity perceives noise (by gait) and light.
+  const noise = p.speed < 0.3 ? 0 : crouching ? 1.5 : mode === 'run' ? 15 : 6;
+  const event = stepProwler(prowler, halls, { px: p.x, pz: p.z, noise, lit: p.flashlight || world.lightAtCamera > 0.3 }, DT);
+  if (event === 'spotted') audio.sting();
+  if (event === 'caught') return die();
+
+  const ex = (halls.exitX + 0.5) * CELL, ez = (halls.exitZ + 0.5) * CELL;
+  if (Math.hypot(p.x - ex, p.z - ez) < 1.1) reachExit();
 }
 
 function nearFlicker(): boolean {
@@ -230,7 +334,7 @@ renderer.setAnimationLoop((now) => {
 
   if (screen === 'playing') {
     acc += dt;
-    while (acc >= DT) {
+    while (acc >= DT && screen === 'playing') {
       tick();
       acc -= DT;
     }
@@ -261,6 +365,33 @@ renderer.setAnimationLoop((now) => {
     camera.updateProjectionMatrix();
   }
 
+  // Entity: visuals, proximity sounds, picture breaking up.
+  const active = prowler.state !== 'dormant' && screen !== 'title';
+  entity.visible = active;
+  let danger = screen === 'dead' ? 1 : 0;
+  if (active) {
+    entity.position.set(prowler.x, Math.abs(Math.sin(real * 5)) * 0.03 * prowler.speed, prowler.z);
+    entity.rotation.set(0, prowler.yaw, Math.sin(real * 2.3) * 0.04);
+    const dx = prowler.x - p.x, dz = prowler.z - p.z, dist = Math.hypot(dx, dz);
+    const chasing = prowler.state === 'chase';
+    if (screen === 'playing') {
+      danger = Math.max(chasing ? 0.3 : 0, 1 - dist / 9);
+      if ((rustle -= dt) <= 0 && dist < 24) {
+        rustle = (chasing ? 0.16 : 0.4) + Math.random() * 0.3;
+        // Pan: project the direction to the entity on the camera's right vector.
+        audio.rustle(1 - dist / 24, Math.max(-1, Math.min(1, (dx * Math.cos(p.yaw) - dz * Math.sin(p.yaw)) / (dist + 0.01))));
+      }
+      if ((chasing || dist < 12) && (heart -= dt) <= 0) {
+        heart = chasing ? 0.5 : 0.95;
+        audio.heartbeat(chasing ? 1 : 0.5);
+      }
+    }
+  }
+  glitch += (danger - glitch) * Math.min(1, dt * 4);
+  fade = Math.max(0, fade - dt * 0.7);
+  postMaterial.uniforms.uGlitch.value = glitch;
+  postMaterial.uniforms.uFade.value = screen === 'end' ? 1 : fade;
+
   world.update(dt, time, camera, p.flashlight ? 1 : 0);
   audio.update(dt, world.lightAtCamera, nearFlicker(), screen !== 'playing');
 
@@ -275,9 +406,9 @@ renderer.setAnimationLoop((now) => {
 
   frameMs += (performance.now() - t0 - frameMs) * 0.05;
   fps += (1 / Math.max(dt, 1e-4) - fps) * 0.05;
-  if (screen !== 'title') {
+  if (screen === 'playing' || screen === 'paused') {
     ui.updateHud(halls.seed, time, p.stamina / PLAYER.staminaMax, p.exhausted,
-      `${fps.toFixed(0)} FPS  ${frameMs.toFixed(1)} ms\n${calls} appels  ${(tris / 1000).toFixed(1)}k tris\n${world.chunkCount} chunks\nx ${p.x.toFixed(1)}  z ${p.z.toFixed(1)}\nseed ${seedText}`);
+      `${fps.toFixed(0)} FPS  ${frameMs.toFixed(1)} ms\n${calls} appels  ${(tris / 1000).toFixed(1)}k tris\n${world.chunkCount} chunks\nx ${p.x.toFixed(1)}  z ${p.z.toFixed(1)}\nseed ${seedText}  ${floorName(depth)}\nsortie ${Math.hypot(p.x - (halls.exitX + 0.5) * CELL, p.z - (halls.exitZ + 0.5) * CELL).toFixed(0)} m`);
   }
   frames++;
 });
@@ -290,9 +421,14 @@ if (params.has('debug')) {
     state: () => ({
       screen, seedText, x: player.x, z: player.z, yaw: player.yaw, eyeY: camera.position.y,
       stamina: player.stamina, exhausted: player.exhausted, speed: player.speed,
+      depth, exitX: (halls.exitX + 0.5) * CELL, exitZ: (halls.exitZ + 0.5) * CELL,
+      prowler: prowler.state, prowlerDist: Math.hypot(prowler.x - player.x, prowler.z - player.z),
       chunks: world.chunkCount, calls: renderer.info.render.calls, light: world.lightAtCamera, time,
     }),
     setInput: (o: typeof forced) => { forced = o; },
     setYaw: (yaw: number) => { player.yaw = yaw; },
+    teleport: (x: number, z: number) => { player.x = player.px = x; player.z = player.pz = z; player.vx = player.vz = 0; },
+    /** Put the entity right behind the player, already chasing. */
+    summon: () => { prowler.state = 'chase'; prowler.x = player.x; prowler.z = player.z + 2.5; prowler.lostFor = 0; },
   };
 }

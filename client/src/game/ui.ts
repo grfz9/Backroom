@@ -29,6 +29,9 @@ const CSS = `
 #ui .stamina b { display: block; height: 100%; background: #e8e2c4; }
 #ui .stamina.low b { background: #ff5a4a; }
 #ui .fps { position: absolute; top: 12%; left: 5%; font-size: 12px; font-weight: 400; white-space: pre; text-shadow: none; background: rgba(0,0,0,.55); padding: 6px 8px; display: none; }
+#ui .msg { position: absolute; top: 22%; left: 0; right: 0; text-align: center; letter-spacing: .25em; opacity: 0; transition: opacity 1.2s; white-space: pre-line; line-height: 1.8; }
+#ui .msg.on { opacity: 1; }
+#ui .screen p { max-width: 560px; text-align: center; line-height: 1.8; letter-spacing: .08em; font-size: 14px; opacity: .85; white-space: pre-line; margin: 0 16px; }
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes jitter { 0%,100% { transform: none; } 92% { transform: translateX(2px) skewX(-2deg); } 94% { transform: translateX(-3px); } 96% { transform: none; } }
 `;
@@ -50,6 +53,9 @@ export function randomSeedText(): string {
 
 export interface UIHandlers {
   onStart(seedText: string): void;
+  /** Resume the saved run at its deepest floor. */
+  onContinue(): void;
+  onRetry(): void;
   onResume(): void;
   onQuit(): void;
 }
@@ -65,9 +71,13 @@ export class GameUI {
   private seedInput: HTMLInputElement;
   private pauseSeed: HTMLElement;
   private lastStamp = '';
+  private msg: HTMLElement;
+  private msgTimer = 0;
+  private root: HTMLElement;
 
   constructor(root: HTMLElement, private settings: SettingsStore, handlers: UIHandlers) {
     const s = settings.get();
+    this.root = root;
     root.innerHTML = `<style>${CSS}</style>
       <div class="hud">
         <div class="rec">REC<i></i></div>
@@ -75,12 +85,25 @@ export class GameUI {
         <div class="stamp"></div>
         <div class="stamina"><b></b></div>
         <div class="fps"></div>
+        <div class="msg"></div>
+      </div>
+      <div class="screen dead">
+        <h1 style="font-size:44px">SIGNAL PERDU</h1>
+        <p class="dead-text"></p>
+        <button type="button" class="retry">RECOMMENCER L'ÉTAGE</button>
+        <button type="button" class="quit2">QUITTER</button>
+      </div>
+      <div class="screen end">
+        <h1 style="font-size:44px">FIN DE BANDE</h1>
+        <p class="end-text"></p>
+        <button type="button" class="quit3">RETOUR AU TITRE</button>
       </div>
       <form class="screen title on">
         <h1>LIMINAL</h1>
         <div class="sub">BUREAU DE CARTOGRAPHIE INTÉRIEURE — ÉQUIPE 12</div>
         <label>SEED<input type="text" name="seed" maxlength="40" autocomplete="off" spellcheck="false"></label>
         <button type="submit">ENTRER</button>
+        <button type="button" class="continue" style="display:none"></button>
         <div class="hint">ZQSD / WASD : se déplacer · Maj : courir · Ctrl ou C : s'accroupir · F : lampe<br>Échap : pause · F3 : compteur FPS</div>
       </form>
       <div class="screen pause">
@@ -101,6 +124,10 @@ export class GameUI {
     this.staminaBar = q('.stamina b');
     this.fps = q('.fps');
     this.pauseSeed = q('.pause-seed');
+    this.msg = q('.msg');
+    q('.retry').addEventListener('click', () => handlers.onRetry());
+    q('.continue').addEventListener('click', () => handlers.onContinue());
+    for (const c of ['.quit2', '.quit3']) q(c).addEventListener('click', () => handlers.onQuit());
     this.seedInput = q('input[name=seed]');
     this.seedInput.value = localStorage.getItem('liminal.lastSeed') ?? randomSeedText();
 
@@ -117,11 +144,30 @@ export class GameUI {
     }
   }
 
-  show(screen: 'title' | 'playing' | 'paused', seedText = ''): void {
+  /** Offer « Continuer » on the title screen when a run is saved. */
+  setContinue(label: string | null): void {
+    const b = this.root.querySelector('.continue') as HTMLElement;
+    b.style.display = label ? '' : 'none';
+    b.textContent = label ?? '';
+  }
+
+  /** Fading message in the middle of the picture (objective, floor name). */
+  message(text: string, seconds = 6): void {
+    this.msg.textContent = text;
+    this.msg.classList.add('on');
+    clearTimeout(this.msgTimer);
+    this.msgTimer = window.setTimeout(() => this.msg.classList.remove('on'), seconds * 1000);
+  }
+
+  show(screen: 'title' | 'playing' | 'paused' | 'dead' | 'end', seedText = '', text = ''): void {
     this.title.classList.toggle('on', screen === 'title');
     this.pause.classList.toggle('on', screen === 'paused');
-    this.hud.classList.toggle('on', screen !== 'title');
-    if (screen === 'paused') this.pauseSeed.textContent = `LES COULOIRS — SEED : ${seedText}`;
+    this.root.querySelector('.dead')!.classList.toggle('on', screen === 'dead');
+    this.root.querySelector('.end')!.classList.toggle('on', screen === 'end');
+    this.hud.classList.toggle('on', screen === 'playing' || screen === 'paused');
+    if (screen === 'dead') this.root.querySelector('.dead-text')!.textContent = text;
+    if (screen === 'end') this.root.querySelector('.end-text')!.textContent = text;
+    if (screen === 'paused') this.pauseSeed.textContent = `${text} — SEED : ${seedText}`;
     if (screen === 'title') this.seedInput.focus();
   }
 

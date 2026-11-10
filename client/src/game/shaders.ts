@@ -9,10 +9,11 @@ varying vec3 vWorld;
 varying vec3 vNormal;
 varying vec2 vUv;
 void main() {
-  vWorld = position;            // chunk geometry is built directly in world space
-  vNormal = normal;
+  vec4 w = modelMatrix * vec4(position, 1.0);   // chunks are built in world space (identity matrix)
+  vWorld = w.xyz;
+  vNormal = normalize(mat3(modelMatrix) * normal);
   vUv = uv;
-  gl_Position = projectionMatrix * viewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * viewMatrix * w;
 }`;
 
 export const SURFACE_FRAG = /* glsl */ `
@@ -22,7 +23,7 @@ uniform sampler2D uGrid;       // r: illumination, a: brightness of the panel of
 uniform vec2 uGridOrigin;      // world cell of texel (0,0)
 uniform float uGridSize;
 uniform float uCell;
-uniform float uPanel;          // 1 for neon panels
+uniform float uPanel;          // 0 surface, 1 neon panel, 2 lit decal (alpha test), 3 emissive
 uniform vec3 uTint;            // neon colour
 uniform vec3 uFog;
 uniform float uFogDensity;
@@ -46,7 +47,13 @@ void main() {
   vec4 L = texture2D(uGrid, (p.xz / uCell - uGridOrigin) / uGridSize);
   float light = L.r * 2.0;
   vec3 col;
-  if (uPanel > 0.5) {
+  if (uPanel > 2.5) {
+    col = texture2D(map, vUv).rgb * 1.25;
+  } else if (uPanel > 1.5) {
+    vec4 t = texture2D(map, vUv);
+    if (t.a < 0.35) discard;
+    col = t.rgb * uTint * (0.12 + light * 0.75);
+  } else if (uPanel > 0.5) {
     float on = texture2D(uGrid, (vWorld.xz / uCell - uGridOrigin) / uGridSize).a;
     col = mix(vec3(0.16, 0.15, 0.11), uTint * 1.7, on) * texture2D(map, vUv).rgb;
   } else {
@@ -76,6 +83,8 @@ precision highp float;
 uniform sampler2D tScene;
 uniform float uTime;
 uniform float uVhs;            // 0..1
+uniform float uGlitch;         // 0..1, signal breaking up (entity nearby, death)
+uniform float uFade;           // 0..1, fade to black
 uniform vec2 uRes;
 varying vec2 vUv;
 
@@ -83,13 +92,13 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.545
 
 void main() {
   vec2 uv = vUv;
-  float k = uVhs;
+  float k = uVhs + uGlitch * 1.5;
   // Tape wobble: each scanline shifts a little; rare horizontal tears.
   float line = floor(uv.y * uRes.y);
   uv.x += (hash(vec2(line, floor(uTime * 24.0))) - 0.5) * 0.0016 * k;
-  float tearT = floor(uTime * 1.3);
+  float tearT = floor(uTime * (1.3 + uGlitch * 9.0));
   float tearY = hash(vec2(tearT, 3.0));
-  float tearOn = step(0.9, hash(vec2(tearT, 7.0))) * k;
+  float tearOn = step(0.9 - uGlitch * 0.7, hash(vec2(tearT, 7.0))) * k;
   uv.x += tearOn * smoothstep(0.03, 0.0, abs(uv.y - tearY)) * 0.03 * sin(uTime * 90.0);
   // Head-switching noise at the bottom of the picture.
   float bottom = smoothstep(0.035, 0.0, uv.y) * k;
@@ -119,5 +128,7 @@ void main() {
   col = mix(col, vec3(hash(vec2(line, uTime * 3.0))), bottom * 0.5);
   col *= 1.0 - dot(c, c) * (0.55 + 0.75 * k);
 
+  col = mix(col, vec3(hash(uv * uRes + uTime)) * 0.5, uGlitch * 0.25);
+  col *= 1.0 - uFade;
   gl_FragColor = vec4(pow(max(col, 0.0), vec3(1.0 / 2.2)), 1.0);
 }`;

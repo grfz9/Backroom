@@ -57,5 +57,38 @@ export default async function ({ openGame, shot, assert, sleep }) {
   await sleep(200);
   assert((await state()).screen === 'playing', 'resume returns to the game');
 
+  // Reaching the exit door leads to the next floor, and the run is saved.
+  const before = await state();
+  assert(before.depth === 0, 'starts on floor 0');
+  await page.evaluate((s) => window.__LIMINAL__.teleport(s.exitX - 4, s.exitZ - 0.4), before);
+  await sleep(1200);
+  await shot(page, 'exit');
+  await page.evaluate((s) => window.__LIMINAL__.teleport(s.exitX - 0.5, s.exitZ), before);
+  await sleep(600);
+  const next = await state();
+  assert(next.depth === 1, `walking into the exit goes down one floor (depth=${next.depth})`);
+  assert(Math.hypot(next.x - 1, next.z - 1) < 0.5, 'the player starts the new floor at its spawn');
+
+  // The entity catches a player it has reached: death screen, then retry the same floor.
+  await page.evaluate(() => window.__LIMINAL__.summon());
+  await sleep(600);
+  await shot(page, 'entity');
+  await page.waitForFunction(() => window.__LIMINAL__.state().screen === 'dead', null, { timeout: 15000 });
+  await shot(page, 'dead');
+  await page.click('button.retry');
+  await sleep(400);
+  const retry = await state();
+  assert(retry.screen === 'playing' && retry.depth === 1, 'retry restarts the same floor');
+  assert(retry.prowler === 'dormant', 'the entity is gone after a retry');
+
+  // Quitting offers to continue the saved run.
+  await page.keyboard.press('Escape');
+  await page.click('button.quit');
+  await sleep(300);
+  assert(await page.isVisible('button.continue'), 'the title offers to continue');
+  await page.click('button.continue');
+  await sleep(400);
+  assert((await state()).depth === 1, 'continue resumes at the saved floor');
+
   assert(page.errors.length === 0, `no console/page errors, got:\n${page.errors.join('\n')}`);
 }
