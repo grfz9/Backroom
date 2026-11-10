@@ -35,7 +35,7 @@ describe('co-op protocol', () => {
     const { host, joined } = room(2);
     joined[0].net.sync(snap(10), 0, []);
     joined[1].net.sync(snap(20), 0, []);
-    host.sync(snap(1), 5, [{ kind: 'prowler', x: 3, z: 4, yaw: 0, state: 'chase', speed: 4 }]);
+    host.sync(snap(1), 5, [{ kind: 'prowler', i: 0, tgt: 1, x: 3, z: 4, yaw: 0, state: 'chase', speed: 4 }]);
     expect(host.playerCount).toBe(3);
     expect([...joined[0].net.others.values()].map((p) => [p.id, p.x])).toEqual([[0, 1], [2, 20]]);
     expect(joined[0].h.onWorld).toHaveBeenCalledWith(5, [expect.objectContaining({ state: 'chase' })]);

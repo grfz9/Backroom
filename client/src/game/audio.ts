@@ -24,6 +24,11 @@ export class GameAudio {
   private far!: GainNode;
   private dreadGain!: GainNode;
   private dark = 0;
+  private depth = 0;
+  private chaseGain!: GainNode;
+  private chase = 0;
+  private beat = 0;
+  private beatCount = 0;
 
   /** Must be called from a user gesture. */
   start(): void {
@@ -78,6 +83,34 @@ export class GameAudio {
       o.start();
     }
     trem.connect(this.dreadGain).connect(this.far);
+
+    // Chase music: a detuned, distorted bass drone with a frantic tremolo; kicks are added in update().
+    this.chaseGain = ctx.createGain();
+    this.chaseGain.gain.value = 0;
+    const shaper = ctx.createWaveShaper();
+    const curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) curve[i] = Math.tanh(((i / 128) - 1) * 4);
+    shaper.curve = curve;
+    const pulse = ctx.createGain();
+    const pulseLfo = ctx.createOscillator();
+    pulseLfo.type = 'square';
+    pulseLfo.frequency.value = 6;                                   // 16th notes at 180 bpm
+    const pulseDepth = ctx.createGain();
+    pulseDepth.gain.value = 0.5;
+    pulse.gain.value = 0.5;
+    pulseLfo.connect(pulseDepth).connect(pulse.gain);
+    pulseLfo.start();
+    for (const f of [55, 58.3, 82.4, 116.5]) {                      // root, minor second, tritone-ish cluster
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.value = f;
+      o.connect(shaper);
+      o.start();
+    }
+    const chaseLp = ctx.createBiquadFilter();
+    chaseLp.type = 'lowpass';
+    chaseLp.frequency.value = 900;
+    shaper.connect(chaseLp).connect(pulse).connect(this.chaseGain).connect(this.master);
 
     // Shared white-noise buffer.
     this.noise = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
@@ -280,6 +313,55 @@ export class GameAudio {
     }
   }
 
+  /** Floor number: deeper floors sound worse. */
+  setDepth(depth: number): void {
+    this.depth = depth;
+  }
+
+  /** Turn the chase music on or off (it fades). */
+  setChase(on: boolean): void {
+    this.chase = on ? 1 : 0;
+  }
+
+  /** Jumpscare: a layered, clipped scream right in the ears. */
+  scream(monster: 'prowler' | 'mimic'): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const t = ctx.currentTime, base = monster === 'prowler' ? 380 : 620;
+    const shaper = ctx.createWaveShaper();
+    const curve = new Float32Array(256);
+    for (let i = 0; i < 256; i++) curve[i] = Math.tanh(((i / 128) - 1) * 9);
+    shaper.curve = curve;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(0.9, t + 0.03);
+    g.gain.setValueAtTime(0.9, t + 1.0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 1.5);
+    shaper.connect(g).connect(this.master);
+    // Several rough voices sliding up and wobbling against each other.
+    for (const mul of [1, 1.07, 1.5, 2.02, 2.9]) {
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(base * mul * 0.6, t);
+      o.frequency.exponentialRampToValueAtTime(base * mul * 1.5, t + 0.12);
+      o.frequency.linearRampToValueAtTime(base * mul * 1.15, t + 1.4);
+      const vib = ctx.createOscillator(), vg = ctx.createGain();
+      vib.frequency.value = 27 + mul * 9;
+      vg.gain.value = base * mul * 0.08;
+      vib.connect(vg).connect(o.frequency);
+      const og = ctx.createGain();
+      og.gain.value = 0.22;
+      o.connect(og).connect(shaper);
+      o.start(t);
+      vib.start(t);
+      o.stop(t + 1.6);
+      vib.stop(t + 1.6);
+    }
+    this.burst(2500, 0.7, 1.4, 0.9, 0, 'bandpass');
+    this.burst(6000, 0.5, 1.2, 0.5, 0, 'highpass');
+    this.thump(45, 1.2, 1);
+  }
+
   /** The entity has seen the player: a tearing shriek. */
   sting(): void {
     if (!this.ctx) return;
@@ -326,12 +408,22 @@ export class GameAudio {
     this.hissGain.gain.setTargetAtTime(hum * 0.02 * duck, t, 0.08);
     this.droneGain.gain.setTargetAtTime((1 - hum) * 0.3 * duck, t, 0.6);
     this.dark += (1 - hum - this.dark) * Math.min(1, dt * 0.4);       // darkness sinks in slowly
-    this.dreadGain.gain.setTargetAtTime(this.dark * this.dark * 0.16 * duck, t, 1.5);
+    // The dread never fully leaves on deeper floors, even under the neons.
+    const dread = Math.min(1, this.dark * this.dark + this.depth * 0.14);
+    this.dreadGain.gain.setTargetAtTime(dread * 0.16 * duck, t, 1.5);
+    this.chaseGain.gain.setTargetAtTime(this.chase * 0.2 * duck, t, this.chase ? 0.15 : 1.2);
+    if (this.chase && !paused && (this.beat -= dt) <= 0) {
+      // 180 bpm kick with an off-beat metallic hit: the body wants to run.
+      this.beat = 1 / 3;
+      this.thump(58, 0.16, 0.55);
+      if (this.beatCount++ % 2 === 1) this.burst(5200, 5, 0.05, 0.12, 0, 'bandpass');
+      if (this.beatCount % 16 === 0) this.wail(880, 1400, 0.9, 0.1, 0);
+    }
     if (paused) return;
     // Tube stutter: a dry tick each time the level around us jumps.
     if (flickering && Math.abs(light - this.lastHum) > 0.04) this.burst(4200, 3, 0.03, 0.05, Math.random() - 0.5, 'bandpass');
     this.lastHum = light;
-    this.nextDistant -= dt * (1 + this.dark * 2.5);                   // the dark is busier
+    this.nextDistant -= dt * (1 + this.dark * 2.5 + this.depth * 0.5);                   // the dark is busier
     if (this.nextDistant <= 0) {
       this.nextDistant = 25 + Math.random() * 60;
       this.distant();
