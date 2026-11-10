@@ -1,0 +1,40 @@
+# Builds the game and publishes it on GitHub Pages (https://grfz9.github.io/Backroom/).
+# Requires: Settings → Pages → Source = "GitHub Actions".
+name: Publier le jeu
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - run: npm run check
+      - run: npx vite build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/client
+      - id: deployment
+        uses: actions/deploy-pages@v4
