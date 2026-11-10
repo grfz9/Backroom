@@ -32,6 +32,10 @@ export interface PlayerSnap {
 
 export interface EntitySnap {
   kind: 'prowler' | 'mimic';
+  /** Index among entities of the same kind. */
+  i: number;
+  /** Id of the player it is after, or -1. */
+  tgt: number;
   x: number;
   z: number;
   yaw: number;

@@ -84,8 +84,17 @@ export class WorldView {
   /** Illumination at the camera (0..~1.5), smoothed. Used for fog and audio. */
   lightAtCamera = 1;
 
+  private tint = TINT.clone();
+  private fog = FOG.clone();
+  private ambient = AMBIENT;
+
   constructor(private halls: Halls) {
     this.gridTex.magFilter = this.gridTex.minFilter = THREE.LinearFilter;
+    // Each floor down: the light turns from sick yellow to a dim rust, the fog closes in.
+    const k = Math.min(1, halls.depth / 4);
+    this.tint.lerp(new THREE.Vector3(1.0, 0.62, 0.42), k);
+    this.fog.lerp(new THREE.Vector3(0.07, 0.025, 0.015), k);
+    this.ambient = AMBIENT * (1 - 0.6 * k);
     this.mats = {
       floor: this.material(carpetTexture(), 0), ceil: this.material(ceilingTexture(), 0), wall: this.material(wallpaperTexture(), 0),
       panel: this.material(panelTexture(), 1), arrow: this.material(arrowTexture(), 2), exit: this.material(exitTexture(), 3),
@@ -100,8 +109,8 @@ export class WorldView {
         fragmentShader: SURFACE_FRAG,
         uniforms: {
           map: { value: map }, uGrid: { value: this.gridTex }, uGridOrigin: { value: this.gridOrigin },
-          uGridSize: { value: GRID }, uCell: { value: CELL }, uPanel: { value: panel }, uTint: { value: TINT },
-          uFog: { value: FOG.clone() }, uFogDensity: { value: FOG_DENSITY },
+          uGridSize: { value: GRID }, uCell: { value: CELL }, uPanel: { value: panel }, uTint: { value: this.tint },
+          uFog: { value: this.fog.clone() }, uFogDensity: { value: FOG_DENSITY * (1 + 0.1 * this.halls.depth) },
           uCam: { value: new THREE.Vector3() }, uCamDir: { value: new THREE.Vector3(0, 0, -1) }, uFlash: { value: 0 },
         },
       });
@@ -244,7 +253,7 @@ export class WorldView {
       this.buildSplats(ox, oz);
     }
     const acc = this.acc, d = this.gridData, h = this.halls;
-    acc.fill(AMBIENT);
+    acc.fill(this.ambient);
     for (let i = 0; i < GRID * GRID; i++) d[i * 4 + 3] = 0;
     for (let l = 0; l < this.lightCount; l++) {
       const cell = this.lightCell[l], gx = cell % GRID;
@@ -272,7 +281,7 @@ export class WorldView {
       m.uniforms.uCam.value.copy(cam.position);
       cam.getWorldDirection(m.uniforms.uCamDir.value);
       m.uniforms.uFlash.value = flashlight;
-      m.uniforms.uFog.value.copy(FOG).multiplyScalar(fogScale);
+      m.uniforms.uFog.value.copy(this.fog).multiplyScalar(fogScale);
     }
   }
 

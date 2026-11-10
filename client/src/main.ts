@@ -17,6 +17,7 @@ import { createMimic, stepMimic, type Mimic } from '@shared/sim/mimic';
 import { createProwler, stepProwler, type Prowler } from '@shared/sim/prowler';
 import type { ActionName } from './core/contracts';
 import { createSettingsStore } from './core/settings';
+import { animateActor, buildProwler, buildProwlerHead, buildSurveyor, buildSurveyorHead, scareMats, type Actor, type ActorMats } from './game/actors';
 import { GameAudio, type StepMode } from './game/audio';
 import { Net, type EntitySnap, type PlayerSnap } from './game/net';
 import { PeerRoom, randomRoomCode } from './game/peer';
@@ -62,13 +63,15 @@ function resize(): void {
   postMaterial.uniforms.uRes.value.set(target.width, target.height);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  onResize?.(w / h);
 }
+let onResize: ((aspect: number) => void) | null = null;
 window.addEventListener('resize', resize);
 resize();
 
 // --- Game state ---------------------------------------------------------------
 
-type Screen = 'title' | 'playing' | 'paused' | 'dead' | 'end';
+type Screen = 'title' | 'playing' | 'paused' | 'scare' | 'dead' | 'end';
 /** Number of floors to go down before the tape ends. */
 const FLOORS = 5;
 const SAVE_KEY = 'liminal.run.v1';
@@ -79,8 +82,14 @@ let depth = 0;
 let halls: Halls = createHalls(hashString(seedText));
 let world = new WorldView(halls);
 scene.add(world.group);
-let prowler: Prowler = createProwler(halls);
+/** One Prowler on the first floors, two from floor −2, three on the last. */
+const makeProwlers = (): Prowler[] => Array.from({ length: 1 + (depth >= 2 ? 1 : 0) + (depth >= 4 ? 1 : 0) }, (_, i) => createProwler(halls, i));
+let prowlers: Prowler[] = [];
+const prowlerTargets: number[] = [];
+/** True while a Prowler is chasing THIS player: chase music, and fear gives endless breath. */
+let chased = false;
 let mimic: Mimic = createMimic(halls);
+prowlers = makeProwlers();
 let time = 0, runTime = 0, deaths = 0;
 let glitch = 0, fade = 0, heart = 0, rustle = 0;
 const floorName = (d: number): string => (d === 0 ? 'REZ-DE-COULOIR' : `ÉTAGE −${d}`);
@@ -113,56 +122,57 @@ let remoteEntities: EntitySnap[] = [];
 
 // --- Actors (entities and other players) -----------------------------------------
 
-const prowlerMesh = new THREE.Group();
-const mimicMesh = new THREE.Group();
-const avatars = new Map<number, THREE.Group>();
-let avatarParts: { suit: THREE.Material; dark: THREE.Material; rec: THREE.Material };
-
-function addBox(group: THREE.Group, mat: THREE.Material, w: number, h: number, d: number, x: number, y: number, z: number, tilt = 0): void {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-  m.position.set(x, y, z);
-  m.rotation.x = tilt;
-  group.add(m);
-}
-
-/** A surveyor: grey coverall, shoulder camcorder. `recording` lights the red REC lamp. */
-function buildSurveyor(group: THREE.Group, recording: boolean): void {
-  group.clear();
-  const { suit, dark, rec } = avatarParts;
-  addBox(group, suit, 0.46, 0.7, 0.26, 0, 1.15, 0);              // torso
-  addBox(group, suit, 0.24, 0.26, 0.24, 0, 1.65, 0);             // head
-  addBox(group, suit, 0.17, 0.8, 0.19, -0.12, 0.4, 0);           // legs
-  addBox(group, suit, 0.17, 0.8, 0.19, 0.12, 0.4, 0);
-  addBox(group, suit, 0.12, 0.65, 0.14, -0.31, 1.15, 0);         // arms
-  addBox(group, suit, 0.12, 0.65, 0.14, 0.31, 1.15, -0.08, -0.5);
-  addBox(group, dark, 0.14, 0.16, 0.36, 0.2, 1.62, -0.1);        // camcorder on the shoulder
-  addBox(group, recording ? rec : dark, 0.035, 0.035, 0.02, 0.2, 1.72, -0.285);   // REC lamp: the tell
-  scene.add(group);
-}
+const prowlerActors: Actor[] = [];
+let mimicActor: Actor;
+const avatars = new Map<number, Actor>();
+let actorMats: ActorMats;
 
 /** Rebuild every actor with the materials of the current level (they sample its light grid). */
 function buildActors(): void {
-  avatarParts = {
+  for (const a of [...prowlerActors, ...avatars.values()]) scene.remove(a.group);
+  if (mimicActor) scene.remove(mimicActor.group);
+  prowlerActors.length = 0;
+  avatars.clear();
+  actorMats = {
+    skin: world.wallMaterial,                                   // the Prowler is made of the level's wallpaper
+    dark: world.material(flatTexture('#050505'), 0),
+    glow: world.material(flatTexture('#ffffff'), 3),            // eyes shine in the dark
+    teeth: world.material(flatTexture('#d8d0b0'), 0),
     suit: world.material(suitTexture(), 0),
-    dark: world.material(flatTexture('#1b1b1b'), 0),
+    face: world.material(flatTexture('#b39a84'), 0),
     rec: world.material(flatTexture('#ff1e1e'), 3),
   };
-  // Le Rôdeur: a tall, stooped figure cut out of the level's own wallpaper.
-  prowlerMesh.clear();
-  const wp = world.wallMaterial;
-  addBox(prowlerMesh, wp, 0.42, 1.25, 0.2, 0, 1.45, 0, 0.12);       // torso, leaning forward
-  addBox(prowlerMesh, wp, 0.26, 0.34, 0.24, 0, 2.25, -0.16, 0.5);   // head pressed under the ceiling
-  addBox(prowlerMesh, wp, 0.13, 0.9, 0.13, -0.12, 0.45, 0.05);      // legs
-  addBox(prowlerMesh, wp, 0.13, 0.9, 0.13, 0.12, 0.45, 0.05);
-  addBox(prowlerMesh, wp, 0.09, 1.7, 0.09, -0.3, 1.2, -0.1, 0.15);  // arms that reach the knees
-  addBox(prowlerMesh, wp, 0.09, 1.7, 0.09, 0.3, 1.2, -0.1, 0.15);
-  scene.add(prowlerMesh);
+  for (let i = 0; i < prowlers.length; i++) {
+    const a = buildProwler(actorMats);
+    prowlerActors.push(a);
+    scene.add(a.group);
+  }
   // Le Double looks exactly like a teammate — except that its camcorder is not recording.
-  buildSurveyor(mimicMesh, false);
-  for (const g of avatars.values()) scene.remove(g);
-  avatars.clear();
+  mimicActor = buildSurveyor(actorMats, false);
+  scene.add(mimicActor.group);
 }
 buildActors();
+
+// --- Jumpscare: the head of what killed you, lit from below, filling the frame ---------
+
+const scareScene = new THREE.Scene();
+const scareCam = new THREE.PerspectiveCamera(50, 1, 0.01, 10);
+const scareLamp = new THREE.PointLight(0xfff0c0, 2.2, 3);
+scareLamp.position.set(0, -0.3, -0.2);
+scareScene.add(scareLamp, new THREE.AmbientLight(0x554433, 0.5));
+/** Heads are modelled facing -Z; the holder turns them around to face the lens. */
+function scareHead(head: THREE.Group, scale: number): THREE.Group {
+  const holder = new THREE.Group();
+  head.rotation.y = Math.PI;
+  head.scale.setScalar(scale);
+  holder.add(head);
+  scareScene.add(holder);
+  return holder;
+}
+const scareHeads = { prowler: scareHead(buildProwlerHead(scareMats()), 1), mimic: scareHead(buildSurveyorHead(scareMats(), true), 1.3) };
+let scareT = 0;
+let scareBy: 'prowler' | 'mimic' = 'prowler';
+const SCARE_TIME = 1.4;
 
 function loadLevel(text: string, floor: number): void {
   scene.remove(world.group);
@@ -172,7 +182,8 @@ function loadLevel(text: string, floor: number): void {
   halls = createHalls((hashString(text) ^ Math.imul(floor, 0x9e3779b1)) >>> 0, floor);
   world = new WorldView(halls);
   scene.add(world.group);
-  prowler = createProwler(halls);
+  prowlers = makeProwlers();
+  audio.setDepth(floor);
   mimic = createMimic(halls);
   remoteEntities = [];
   buildActors();
@@ -191,7 +202,7 @@ const locked = (): boolean => NOLOCK || document.pointerLockElement === canvas;
 
 function setScreen(next: Screen): void {
   screen = next;
-  ui.show(next, seedText, floorName(depth));
+  ui.show(next === 'scare' ? 'playing' : next, seedText, floorName(depth));
   if (next !== 'playing') keys.clear();
 }
 
@@ -226,19 +237,29 @@ function startFloor(text: string, floor: number): void {
   lock();
   ui.message(floor === 0
     ? 'TROUVEZ LA PORTE DE SERVICE.\nL\'ÉQUIPE 7 A LAISSÉ DES FLÈCHES À LA CRAIE.'
-    : `${floorName(floor)}\nPLUS SOMBRE. IL VOUS ENTEND.`);
+    : `${floorName(floor)}\n${['', 'PLUS SOMBRE. IL VOUS CHERCHE.', 'ILS SONT DEUX.', 'LES NÉONS MEURENT.', 'ILS SONT TROIS. COUREZ.'][floor] ?? ''}`);
 }
 
 function die(by: 'prowler' | 'mimic'): void {
   if (screen !== 'playing' && screen !== 'paused') return;
   deaths++;
+  audio.setChase(false);
+  audio.scream(by);
+  scareBy = by;
+  scareT = SCARE_TIME;
+  screen = 'scare';
+  ui.show('playing', seedText, floorName(depth));     // no menu over the face
+  keys.clear();
+}
+
+/** After the jumpscare: the tape is lost. */
+function showDead(): void {
   audio.death();
   glitch = 1;
   screen = 'dead';
-  ui.show('dead', seedText, by === 'mimic'
+  ui.show('dead', seedText, scareBy === 'mimic'
     ? `Ce n'était pas un arpenteur — ${floorName(depth)}.\nSon caméscope n'enregistrait pas : pas de voyant rouge.`
     : `Le Rôdeur vous a trouvé — ${floorName(depth)}.\nIl voit ce qui est éclairé et entend ce qui court.`);
-  keys.clear();
   if (!NOLOCK) document.exitPointerLock();
 }
 
@@ -366,6 +387,11 @@ const ui = new GameUI(document.getElementById('ui')!, settings, {
   },
 });
 refreshContinue();
+onResize = (aspect) => {
+  scareCam.aspect = aspect;
+  scareCam.updateProjectionMatrix();
+};
+onResize(window.innerWidth / window.innerHeight);
 
 document.addEventListener('pointerlockchange', () => {
   if (screen === 'playing' && !locked()) setScreen('paused');
@@ -437,7 +463,7 @@ function tickPlayer(): void {
   p.crouch += Math.max(-1, Math.min(1, ((crouching ? 1 : 0) - p.crouch) / (DT / PLAYER.crouchTime))) * (DT / PLAYER.crouchTime);
 
   // Stamina.
-  if (running && p.speed > PLAYER.walkSpeed) {
+  if (running && p.speed > PLAYER.walkSpeed && !chased) {
     p.stamina = Math.max(0, p.stamina - PLAYER.staminaDrain * DT);
     p.cooldown = PLAYER.staminaRegenDelay;
     if (p.stamina === 0) p.exhausted = true;
@@ -481,21 +507,23 @@ function tickWorld(): void {
     }
     return best;
   };
-  const target = nearest(prowler.x, prowler.z), mtarget = nearest(mimic.x, mimic.z);
-
   const kill = (id: number, by: 'prowler' | 'mimic'): void => {
     if (id === (net?.id ?? 0)) die(by);
     else net?.sendDead(id);
   };
-  if (target) {
-    const event = stepProwler(prowler, halls, { px: target.x, pz: target.z, noise: target.noise, lit: target.lit }, DT);
+  for (let i = 0; i < prowlers.length; i++) {
+    const pr = prowlers[i], target = nearest(pr.x, pr.z);
+    prowlerTargets[i] = target?.id ?? -1;
+    if (!target) continue;
+    const event = stepProwler(pr, halls, { px: target.x, pz: target.z, noise: target.noise, lit: target.lit }, DT);
     if (event === 'spotted') audio.sting();
     if (event === 'caught') {
       kill(target.id, 'prowler');
-      prowler.state = 'dormant';      // it withdraws, and will be back
-      prowler.time = 25;
+      pr.state = 'dormant';      // it withdraws, and will be back
+      pr.time = pr.delay - 20;
     }
   }
+  const mtarget = nearest(mimic.x, mimic.z);
   if (mtarget && stepMimic(mimic, halls, mtarget.x, mtarget.z, DT)) {
     kill(mtarget.id, 'mimic');
     mimic.state = 'dormant';
@@ -516,8 +544,10 @@ function nearFlicker(): boolean {
 function entitySnaps(): EntitySnap[] {
   if (isClient()) return remoteEntities;
   const out: EntitySnap[] = [];
-  if (prowler.state !== 'dormant') out.push({ kind: 'prowler', x: prowler.x, z: prowler.z, yaw: prowler.yaw, state: prowler.state, speed: prowler.speed });
-  if (mimic.state !== 'dormant') out.push({ kind: 'mimic', x: mimic.x, z: mimic.z, yaw: mimic.yaw, state: mimic.state, speed: mimic.speed });
+  prowlers.forEach((pr, i) => {
+    if (pr.state !== 'dormant') out.push({ kind: 'prowler', i, tgt: prowlerTargets[i] ?? -1, x: pr.x, z: pr.z, yaw: pr.yaw, state: pr.state, speed: pr.speed });
+  });
+  if (mimic.state !== 'dormant') out.push({ kind: 'mimic', i: 0, tgt: -1, x: mimic.x, z: mimic.z, yaw: mimic.yaw, state: mimic.state, speed: mimic.speed });
   return out;
 }
 
@@ -582,20 +612,24 @@ renderer.setAnimationLoop((now) => {
   const snaps = screen === 'title' ? [] : entitySnaps();
   const k = Math.min(1, dt * 12);
   let danger = screen === 'dead' ? 1 : 0;
-  prowlerMesh.visible = mimicMesh.visible = false;
+  const me = net?.id ?? 0;
+  let nowChased = false;
+  for (const a of prowlerActors) a.group.visible = false;
+  mimicActor.group.visible = false;
   for (const e of snaps) {
-    const mesh = e.kind === 'prowler' ? prowlerMesh : mimicMesh;
-    mesh.visible = true;
-    ease(mesh, e.x, e.z, e.yaw, isClient() ? k : 1);
-    mesh.position.y = Math.abs(Math.sin(real * (e.kind === 'prowler' ? 5 : 6.5))) * 0.03 * e.speed;
-    if (e.kind === 'prowler') mesh.rotation.z = Math.sin(real * 2.3) * 0.04;
+    const actor = e.kind === 'prowler' ? prowlerActors[e.i] : mimicActor;
+    if (!actor) continue;
+    const chasing = e.state === 'chase';
+    actor.group.visible = true;
+    ease(actor.group, e.x, e.z, e.yaw, isClient() ? k : 1);
+    animateActor(actor, real, e.speed, chasing);
     if (screen !== 'playing') continue;
     const dx = e.x - p.x, dz = e.z - p.z, dist = Math.hypot(dx, dz);
     if (e.kind === 'mimic') {
       danger = Math.max(danger, 1 - dist / 3.5);      // the picture only betrays it at the last moment
       continue;
     }
-    const chasing = e.state === 'chase';
+    if (chasing && e.tgt === me) nowChased = true;
     danger = Math.max(danger, chasing ? 0.3 : 0, 1 - dist / 9);
     if ((rustle -= dt) <= 0 && dist < 24) {
       rustle = (chasing ? 0.16 : 0.4) + Math.random() * 0.3;
@@ -606,6 +640,20 @@ renderer.setAnimationLoop((now) => {
       audio.heartbeat(chasing ? 1 : 0.5);
     }
   }
+  chased = nowChased;
+  audio.setChase(chased);
+
+  // Jumpscare: the head lunges at the lens, shaking, mouth gaping; then the signal is lost.
+  for (const h of Object.values(scareHeads)) h.visible = false;
+  if (screen === 'scare') {
+    const head = scareHeads[scareBy], t = SCARE_TIME - scareT;
+    head.visible = true;
+    head.position.set((Math.random() - 0.5) * 0.03, 0.02 + (Math.random() - 0.5) * 0.03, -1.5 + 0.8 * Math.min(1, t / 0.1) + Math.min(0.12, t * 0.1));   // lunges, then keeps creeping closer
+    head.rotation.set(0.12 + Math.sin(t * 40) * 0.05, Math.sin(t * 31) * 0.12, Math.sin(t * 47) * 0.2);
+    head.getObjectByName('mouth')!.scale.set(1 + Math.min(1, t * 6) * 0.2, 1 + Math.min(1, t * 8) * 0.45, 1);
+    danger = 0.75;
+    if ((scareT -= dt) <= 0) showDead();
+  }
   glitch += (danger - glitch) * Math.min(1, dt * 4);
   fade = Math.max(0, fade - dt * 0.7);
   postMaterial.uniforms.uGlitch.value = glitch;
@@ -613,9 +661,9 @@ renderer.setAnimationLoop((now) => {
 
   // Co-op: other players' avatars and voices, and our own state sent ~15 times per second.
   if (net) {
-    for (const [id, g] of avatars) {
+    for (const [id, a] of avatars) {
       if (!net.others.get(id)?.alive) {
-        scene.remove(g);
+        scene.remove(a.group);
         avatars.delete(id);
       }
     }
@@ -625,15 +673,18 @@ renderer.setAnimationLoop((now) => {
         voice?.place(o.pid, o.x - p.x, o.z - p.z, p.yaw);
       }
       if (!o.alive) continue;
-      let g = avatars.get(o.id);
-      if (!g) {
-        g = new THREE.Group();
-        buildSurveyor(g, true);
-        g.position.set(o.x, 0, o.z);
-        avatars.set(o.id, g);
+      let a = avatars.get(o.id);
+      if (!a) {
+        a = buildSurveyor(actorMats, true);
+        a.group.position.set(o.x, 0, o.z);
+        scene.add(a.group);
+        avatars.set(o.id, a);
       }
-      ease(g, o.x, o.z, o.yaw, k);
-      g.scale.y = 1 - o.cr * 0.38;
+      // Estimate the speed from how far the avatar still has to travel, for the walk cycle.
+      const gap = Math.hypot(o.x - a.group.position.x, o.z - a.group.position.z);
+      ease(a.group, o.x, o.z, o.yaw, k);
+      animateActor(a, real, Math.min(5, gap * 12), false);
+      a.group.scale.y = 1 - o.cr * 0.38;
     }
     if ((syncTimer -= dt) <= 0) {
       syncTimer = 1 / 15;
@@ -650,9 +701,10 @@ renderer.setAnimationLoop((now) => {
   audio.update(dt, world.lightAtCamera, nearFlicker(), screen !== 'playing');
 
   postMaterial.uniforms.uTime.value = real;
-  postMaterial.uniforms.uVhs.value = settings.get().vhsIntensity;
+  postMaterial.uniforms.uVhs.value = settings.get().vhsIntensity * (1 + depth * 0.12);   // the tape degrades with depth
   renderer.setRenderTarget(target);
-  renderer.render(scene, camera);
+  // During the jumpscare nothing exists but the face, on black.
+  renderer.render(screen === 'scare' ? scareScene : scene, screen === 'scare' ? scareCam : camera);
   const info = renderer.info.render;
   const calls = info.calls, tris = info.triangles;
   renderer.setRenderTarget(null);
@@ -676,20 +728,22 @@ if (params.has('debug')) {
       screen, seedText, x: player.x, z: player.z, yaw: player.yaw, eyeY: camera.position.y,
       stamina: player.stamina, exhausted: player.exhausted, speed: player.speed,
       depth, exitX: (halls.exitX + 0.5) * CELL, exitZ: (halls.exitZ + 0.5) * CELL,
-      prowler: prowler.state, prowlerDist: Math.hypot(prowler.x - player.x, prowler.z - player.z), mimic: mimic.state,
+      prowler: prowlers[0].state, prowlers: prowlers.length, chased, mimic: mimic.state,
       frameMs, chunks: world.chunkCount, calls: renderer.info.render.calls, light: world.lightAtCamera, time,
     }),
     setInput: (o: typeof forced) => { forced = o; },
     setYaw: (yaw: number) => { player.yaw = yaw; },
     teleport: (x: number, z: number) => { player.x = player.px = x; player.z = player.pz = z; player.vx = player.vz = 0; },
+    /** Trigger the death sequence directly. */
+    scare: (kind: 'prowler' | 'mimic') => die(kind),
     /** Put an entity right behind the player. */
     summon: (kind: 'prowler' | 'mimic' = 'prowler') => {
-      const e = kind === 'prowler' ? prowler : mimic;
+      const e = kind === 'prowler' ? prowlers[0] : mimic;
       e.state = kind === 'prowler' ? 'chase' : 'approach';
       e.x = player.x;
-      e.z = player.z + 2.5;
+      e.z = player.z + (kind === 'prowler' ? 6 : 2.5);
       e.stateTime = 0;
-      if (kind === 'prowler') prowler.lostFor = 0;
+      if (kind === 'prowler') prowlers[0].lostFor = 0;
     },
   };
 }

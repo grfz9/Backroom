@@ -71,8 +71,21 @@ export default async function ({ openGame, shot, assert, sleep }) {
 
   // The entity catches a player it has reached: death screen, then retry the same floor.
   await page.evaluate(() => window.__LIMINAL__.summon());
-  await sleep(600);
+  await sleep(700);
   await shot(page, 'entity');
+  const hunted = await state();
+  assert(hunted.chased || hunted.screen !== 'playing', 'a chasing Prowler marks the player as chased');
+  // While chased, sprinting costs nothing.
+  if (hunted.screen === 'playing') {
+    await page.evaluate(() => window.__LIMINAL__.setInput({ mx: 0, mz: 1, run: true, crouch: false }));
+    await sleep(800);
+    const fled = await state();
+    assert(fled.screen !== 'playing' || fled.stamina >= hunted.stamina, 'stamina does not drain during a chase');
+    await page.evaluate(() => window.__LIMINAL__.setInput(null));
+  }
+  await page.waitForFunction(() => window.__LIMINAL__.state().screen === 'scare', null, { timeout: 30000 });
+  await sleep(350);
+  await shot(page, 'jumpscare');
   await page.waitForFunction(() => window.__LIMINAL__.state().screen === 'dead', null, { timeout: 15000 });
   await shot(page, 'dead');
   await page.click('button.retry');

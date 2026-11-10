@@ -31,6 +31,8 @@ export interface Prowler {
   stateTime: number;
   rng: Rng;
   depth: number;
+  /** Seconds before its first appearance. */
+  delay: number;
 }
 
 export interface ProwlerSenses {
@@ -47,10 +49,12 @@ const RADIUS = 0.3;
 const CATCH_DIST = 0.95;
 const out = { x: 0, z: 0 };
 
-export function createProwler(halls: Halls): Prowler {
+/** `index` distinguishes the several Prowlers of the deeper floors (later ones arrive later). */
+export function createProwler(halls: Halls, index = 0): Prowler {
   return {
     x: 0, z: 0, yaw: 0, state: 'dormant', time: 0, speed: 0, goalX: 0, goalZ: 0, path: [],
-    repath: 0, lostFor: 0, stateTime: 0, rng: new Rng(halls.seed ^ 0x5eed), depth: halls.depth,
+    repath: 0, lostFor: 0, stateTime: 0, rng: new Rng((halls.seed ^ 0x5eed) + index * 7919), depth: halls.depth,
+    delay: Math.max(18, SPAWN_DELAY - halls.depth * 8) + index * 30,
   };
 }
 
@@ -105,7 +109,7 @@ export function stepProwler(p: Prowler, halls: Halls, s: ProwlerSenses, dt: numb
   const dist = Math.hypot(s.px - p.x, s.pz - p.z);
 
   if (p.state === 'dormant') {
-    if (p.time < Math.max(20, SPAWN_DELAY - p.depth * 8)) return 'none';
+    if (p.time < p.delay) return 'none';
     // Appear 30–40 m away, out of sight.
     for (let i = 0; i < 12; i++) {
       const a = p.rng.next() * Math.PI * 2, d = 30 + p.rng.next() * 10;
@@ -121,7 +125,7 @@ export function stepProwler(p: Prowler, halls: Halls, s: ProwlerSenses, dt: numb
   }
   if (dist > 90) {            // the player left it far behind: it will reappear elsewhere
     setState(p, 'dormant');
-    p.time = SPAWN_DELAY - 12;
+    p.time = p.delay - 12;
     return 'none';
   }
 
@@ -161,9 +165,10 @@ export function stepProwler(p: Prowler, halls: Halls, s: ProwlerSenses, dt: numb
     if (p.path.length === 0) setState(p, 'search');
   } else if (p.path.length === 0 || p.stateTime > 25) {
     if (p.state === 'search' && p.stateTime > 14) setState(p, 'wander');
-    // Wander: drift loosely toward the player so it never stays out of the game for long.
-    const reach = p.state === 'search' ? 5 : 12;
-    const bias = p.state === 'wander' ? 0.35 : 0;
+    // It actively hunts: even without a clue it closes in on where the player roughly is,
+    // more surely on deeper floors. Only its last approach needs eyes or ears.
+    const reach = p.state === 'search' ? 5 : 7;
+    const bias = p.state === 'wander' ? Math.min(0.9, 0.6 + p.depth * 0.07) : 0;
     const a = p.rng.next() * Math.PI * 2;
     goTo(p, halls,
       p.x + Math.cos(a) * reach * CELL * p.rng.next() + (s.px - p.x) * bias,
@@ -172,7 +177,7 @@ export function stepProwler(p: Prowler, halls: Halls, s: ProwlerSenses, dt: numb
   }
 
   // --- Move ---
-  const max = p.state === 'chase' ? 4.2 + p.depth * 0.12 : p.state === 'investigate' ? 2.6 : p.state === 'search' ? 1.8 : 1.2;
+  const max = p.state === 'chase' ? 4.2 + p.depth * 0.12 : p.state === 'investigate' ? 2.6 : p.state === 'search' ? 2 : 1.7 + p.depth * 0.1;
   p.speed += (max - p.speed) * Math.min(1, dt * 3);
   let tx = p.x, tz = p.z;
   if (p.state === 'chase' && sees && dist < 4) {

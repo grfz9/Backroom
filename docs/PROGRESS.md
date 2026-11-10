@@ -106,6 +106,23 @@ machines, la voix, et le déploiement Pages. La logique du protocole, elle, est 
 **Limites** : l'hôte qui quitte ferme la partie ; pas de sauvegarde en coop ; la sortie s'ouvre dès qu'un
 joueur l'atteint ; derrière certains réseaux d'entreprise le pair-à-pair peut échouer.
 
+### Terreur progressive, traque, screamer, modèles articulés
+
+- **Chaque étage est pire** : lumière qui vire du jaune à la rouille, brouillard plus dense, plus de néons
+  qui bégaient ou meurent, bande plus dégradée, nappe d'angoisse permanente, sons lointains plus fréquents,
+  Rôdeurs plus rapides et plus nombreux (1, puis 2 dès l'étage −2, puis 3 au dernier).
+- **Les monstres cherchent activement** : même sans indice, le Rôdeur converge vers la zone du joueur.
+- **Screamer à la mort** : la tête du monstre fonce sur l'objectif sur fond noir, avec un cri saturé, puis
+  « SIGNAL PERDU ». Une tête différente pour le Rôdeur et pour le Double.
+- **Poursuite** : musique de traque (180 bpm) dès qu'un Rôdeur poursuit ce joueur, et endurance infinie
+  tant que dure la poursuite.
+- **Modèles** (`client/src/game/actors.ts`) : personnages articulés et animés fabriqués par code
+  (membres à deux segments, cycle de marche, mains griffues, crâne à orbites et mâchoire dentée,
+  arpenteurs en combinaison avec sac, bottes et caméscope). Aucun modèle externe ni repris d'un autre jeu.
+
+**Vérifié sur captures** : le Rôdeur dans un couloir, les deux screamers. **Non vérifié** : le son (cri,
+musique) à l'oreille, l'animation en mouvement, l'équilibrage des étages profonds.
+
 ## Décisions du directeur (rulings)
 
 | # | Décision | Raison | Coût si c'est faux |

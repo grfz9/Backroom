@@ -105,7 +105,9 @@ export function createHalls(seed: number, depth = 0): Halls {
     if (nearSpawn(ix, iz)) return LIGHT_STEADY;
     const r = toUnit(hash2(sL, ix, iz));
     if (noise(sK, ix / 9, iz / 9) > 0.7 - depth * 0.05) return r < 0.72 ? LIGHT_DEAD : r < 0.86 ? LIGHT_DYING : LIGHT_FLICKER;
-    return r < 0.76 ? LIGHT_STEADY : r < 0.9 ? LIGHT_FLICKER : r < 0.94 ? LIGHT_DYING : LIGHT_DEAD;
+    // Deeper floors: fewer healthy tubes, more that stutter or die.
+    const steady = 0.76 - depth * 0.09;
+    return r < steady ? LIGHT_STEADY : r < steady + 0.14 + depth * 0.04 ? LIGHT_FLICKER : r < 0.94 ? LIGHT_DYING : LIGHT_DEAD;
   }
 
   function lightLevel(ix: number, iz: number, t: number): number {
