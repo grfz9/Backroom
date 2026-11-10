@@ -19,6 +19,11 @@ export class GameAudio {
   private lastDistant = -1;
   private lastHum = 1;
   private volume = 0.8;
+  /** Where one-shots are routed: `master` (close, dry) or `far` (distant, reverberated). */
+  private dest!: AudioNode;
+  private far!: GainNode;
+  private dreadGain!: GainNode;
+  private dark = 0;
 
   /** Must be called from a user gesture. */
   start(): void {
@@ -33,6 +38,46 @@ export class GameAudio {
     limiter.threshold.value = -10;
     limiter.ratio.value = 12;
     this.master.connect(limiter).connect(ctx.destination);
+
+    // Distant sounds go through a long, dark reverb (generated impulse response).
+    const ir = ctx.createBuffer(2, ctx.sampleRate * 3.2, ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = ir.getChannelData(ch);
+      let lp = 0;
+      for (let i = 0; i < d.length; i++) {
+        lp += (Math.random() * 2 - 1 - lp) * 0.25;                 // darker tail
+        d[i] = lp * Math.pow(1 - i / d.length, 2.4);
+      }
+    }
+    const reverb = ctx.createConvolver();
+    reverb.buffer = ir;
+    const wet = ctx.createGain();
+    wet.gain.value = 1.4;
+    this.far = ctx.createGain();
+    this.far.connect(this.master);
+    this.far.connect(reverb).connect(wet).connect(this.master);
+    this.dest = this.master;
+
+    // Dread: a dissonant cluster (minor second) that rises in the dark, with a slow tremolo.
+    this.dreadGain = ctx.createGain();
+    this.dreadGain.gain.value = 0;
+    const trem = ctx.createGain();
+    const tremLfo = ctx.createOscillator();
+    tremLfo.frequency.value = 0.31;
+    const tremDepth = ctx.createGain();
+    tremDepth.gain.value = 0.35;
+    tremLfo.connect(tremDepth).connect(trem.gain);
+    tremLfo.start();
+    for (const f of [110, 116.6, 55.2, 233.5]) {
+      const o = ctx.createOscillator();
+      o.type = f > 200 ? 'sine' : 'triangle';
+      o.frequency.value = f;
+      const g = ctx.createGain();
+      g.gain.value = f > 200 ? 0.05 : 0.2;
+      o.connect(g).connect(trem);
+      o.start();
+    }
+    trem.connect(this.dreadGain).connect(this.far);
 
     // Shared white-noise buffer.
     this.noise = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
@@ -76,6 +121,15 @@ export class GameAudio {
     lfo.start();
   }
 
+  /** Audio context and output bus, for the proximity voice chat (null before start()). */
+  get context(): AudioContext | null {
+    return this.ctx;
+  }
+
+  get output(): AudioNode {
+    return this.master;
+  }
+
   setVolume(v: number): void {
     this.volume = v;
     if (this.ctx) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.05);
@@ -103,7 +157,7 @@ export class GameAudio {
     g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
     const p = ctx.createStereoPanner();
     p.pan.value = pan;
-    src.connect(f).connect(g).connect(p).connect(this.master);
+    src.connect(f).connect(g).connect(p).connect(this.dest);
     src.stop(t + dur + 0.05);
   }
 
@@ -118,7 +172,7 @@ export class GameAudio {
     g.gain.exponentialRampToValueAtTime(0.0005, t + dur);
     const p = ctx.createStereoPanner();
     p.pan.value = pan;
-    osc.connect(g).connect(p).connect(this.master);
+    osc.connect(g).connect(p).connect(this.dest);
     osc.start(t);
     osc.stop(t + dur + 0.05);
   }
@@ -137,10 +191,39 @@ export class GameAudio {
     }
   }
 
+  /** A pitched voice-like tone: sine with vibrato, sliding from f0 to f1. */
+  private wail(f0: number, f1: number, dur: number, vol: number, pan: number): void {
+    const ctx = this.ctx!, t = ctx.currentTime, osc = ctx.createOscillator(), g = ctx.createGain(), p = ctx.createStereoPanner();
+    const vib = ctx.createOscillator(), vibGain = ctx.createGain();
+    vib.frequency.value = 5.5;
+    vibGain.gain.value = f0 * 0.03;
+    vib.connect(vibGain).connect(osc.frequency);
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(f0, t);
+    osc.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(vol, t + dur * 0.3);
+    g.gain.linearRampToValueAtTime(0, t + dur);
+    p.pan.value = pan;
+    osc.connect(g).connect(p).connect(this.dest);
+    osc.start(t);
+    vib.start(t);
+    osc.stop(t + dur + 0.1);
+    vib.stop(t + dur + 0.1);
+  }
+
   private distant(): void {
-    let kind = Math.floor(Math.random() * 4);
-    if (kind === this.lastDistant) kind = (kind + 1) % 4;
+    // In the dark the repertoire widens to the truly unpleasant sounds (kinds 4–8).
+    const kinds = this.dark > 0.5 ? 9 : 6;
+    let kind = Math.floor(Math.random() * kinds);
+    if (kind === this.lastDistant) kind = (kind + 1) % kinds;
     this.lastDistant = kind;
+    this.dest = this.far;
+    this.playDistant(kind);
+    this.dest = this.master;
+  }
+
+  private playDistant(kind: number): void {
     const pan = Math.random() * 1.8 - 0.9, vol = 0.1 + Math.random() * 0.12;
     if (kind === 0) {
       // Dull knocks.
@@ -163,16 +246,37 @@ export class GameAudio {
       g.gain.linearRampToValueAtTime(vol * 0.5, t + 0.6);
       g.gain.linearRampToValueAtTime(0, t + 2.3);
       p.pan.value = pan;
-      osc.connect(f).connect(g).connect(p).connect(this.master);
+      osc.connect(f).connect(g).connect(p).connect(this.dest);
       osc.start(t);
       osc.stop(t + 2.4);
     } else if (kind === 2) {
       // A door slams somewhere.
       this.thump(48, 0.5, vol * 3, pan);
       this.burst(400, 0.7, 0.35, vol * 1.5, pan);
-    } else {
+    } else if (kind === 3) {
       // Something heavy being dragged.
       for (let i = 0; i < 3; i++) this.burst(140, 2, 0.8, vol * 1.3, pan, 'bandpass', i * 1.1);
+    } else if (kind === 4) {
+      // Slow, heavy footsteps that are not yours, coming closer.
+      for (let i = 0; i < 6; i++) this.thump(62, 0.22, vol * (1 + i * 0.35), pan * (1 - i * 0.12), i * 0.95);
+    } else if (kind === 5) {
+      // A metal impact, far away, with a long tail.
+      this.burst(2400, 6, 1.4, vol * 1.6, pan, 'bandpass');
+      this.thump(90, 0.9, vol * 2.5, pan);
+    } else if (kind === 6) {
+      // A long wail, almost human, falling.
+      this.wail(520 + Math.random() * 120, 230, 3.5, vol * 0.55, pan);
+      this.wail(790, 340, 3.2, vol * 0.18, pan);
+    } else if (kind === 7) {
+      // Whispering: syllables of breathy noise, wandering across the stereo field.
+      for (let i = 0; i < 9; i++) {
+        this.burst(1800 + Math.random() * 2200, 3, 0.12 + Math.random() * 0.14, vol * 0.9, pan * Math.cos(i), 'bandpass', i * 0.2 + Math.random() * 0.08);
+      }
+    } else {
+      // A breath, close, right behind you. Not reverberated: it is here.
+      this.dest = this.master;
+      this.burst(700, 0.8, 1.3, 0.16, 0, 'bandpass');
+      this.burst(500, 0.8, 1.6, 0.13, 0, 'bandpass', 1.5);
     }
   }
 
@@ -221,11 +325,13 @@ export class GameAudio {
     this.humGain.gain.setTargetAtTime(hum * 0.55 * duck, t, 0.08);
     this.hissGain.gain.setTargetAtTime(hum * 0.02 * duck, t, 0.08);
     this.droneGain.gain.setTargetAtTime((1 - hum) * 0.3 * duck, t, 0.6);
+    this.dark += (1 - hum - this.dark) * Math.min(1, dt * 0.4);       // darkness sinks in slowly
+    this.dreadGain.gain.setTargetAtTime(this.dark * this.dark * 0.16 * duck, t, 1.5);
     if (paused) return;
     // Tube stutter: a dry tick each time the level around us jumps.
     if (flickering && Math.abs(light - this.lastHum) > 0.04) this.burst(4200, 3, 0.03, 0.05, Math.random() - 0.5, 'bandpass');
     this.lastHum = light;
-    this.nextDistant -= dt;
+    this.nextDistant -= dt * (1 + this.dark * 2.5);                   // the dark is busier
     if (this.nextDistant <= 0) {
       this.nextDistant = 25 + Math.random() * 60;
       this.distant();

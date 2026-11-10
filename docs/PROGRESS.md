@@ -87,6 +87,25 @@ mourir puis recommencer ; quitter puis « Continuer ».
 **Non vérifié** : l'aspect de la porte de sortie n'a pas été contrôlé sur capture (son fonctionnement
 est testé) ; l'équilibrage (durée d'un étage, dangerosité) n'a pas été éprouvé par un vrai joueur.
 
+### Coop, voix, le Double, ambiance, publication (version compacte)
+
+- **Coop jusqu'à 4** en pair-à-pair (WebRTC via PeerJS et son service public de mise en relation, car
+  GitHub Pages n'a pas de serveur) : « Créer un salon » donne un code à 5 lettres, « Rejoindre » le saisit.
+  L'hôte simule les entités et relaie les positions (`client/src/game/net.ts`, testé avec un transport en mémoire).
+- **Voix de proximité** (`peer.ts`, `voice.ts`) : portée 20 m, panoramique selon la position ; V coupe le micro.
+- **Le Double** (`shared/src/sim/mimic.ts`) : monstre déguisé en arpenteur. Il marche vers vous comme un
+  coéquipier et frappe au contact. Indices : pas de voyant rouge REC, ne s'accroupit pas, ne parle pas.
+- **Lumière arrêtée par les murs** : les zones sombres sont vraiment noires ; halo autour des néons.
+- **Ambiance** : réverbération, nappe dissonante qui monte dans le noir, pas lourds, impact métallique,
+  plainte, chuchotements, souffle derrière soi (plus fréquents dans le noir).
+- **Publication** : `.github/workflows/pages.yml` construit et publie le jeu sur GitHub Pages à chaque
+  push sur `main` (réglage requis : Settings → Pages → Source = « GitHub Actions »).
+
+**Non vérifié ici** (pas d'accès réseau au service PeerJS ni de micro) : la connexion réelle entre deux
+machines, la voix, et le déploiement Pages. La logique du protocole, elle, est testée.
+**Limites** : l'hôte qui quitte ferme la partie ; pas de sauvegarde en coop ; la sortie s'ouvre dès qu'un
+joueur l'atteint ; derrière certains réseaux d'entreprise le pair-à-pair peut échouer.
+
 ## Décisions du directeur (rulings)
 
 | # | Décision | Raison | Coût si c'est faux |

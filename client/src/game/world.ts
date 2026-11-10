@@ -12,7 +12,8 @@ import { arrowTexture, carpetTexture, ceilingTexture, exitTexture, panelTexture,
 const GRID = 64;                 // light grid side, in cells (128 m around the camera)
 const LOAD_RADIUS = 2;           // chunks
 const FOG_DENSITY = 0.052;       // nothing is visible beyond ~40 m
-const LIGHT_REACH = 3.6;         // cells
+const LIGHT_REACH = 4.2;         // cells
+const AMBIENT = 0.016;           // what is left where no neon reaches: almost nothing
 const TINT = new THREE.Vector3(1.0, 0.93, 0.68);
 const FOG = new THREE.Vector3(0.105, 0.09, 0.04);
 
@@ -68,12 +69,32 @@ export class WorldView {
   private gridOrigin = new THREE.Vector2();
   private acc = new Float32Array(GRID * GRID);
   private gridTimer = 0;
+  private gridOx = 0;
+  private gridOz = 0;
+  private lightCount = -1;
+  private wallBits = new Uint8Array(GRID * GRID);
+  private seen = new Int32Array(GRID * GRID);
+  private steps = new Uint8Array(GRID * GRID);
+  private queue2 = new Int32Array(GRID * GRID);
+  private stamp = 0;
+  private lightCell = new Int32Array(GRID * GRID / 4 + 8);
+  private splatStart = new Int32Array(GRID * GRID / 4 + 9);
+  private splatCell = new Int32Array(90000);
+  private splatW = new Float32Array(90000);
   /** Illumination at the camera (0..~1.5), smoothed. Used for fog and audio. */
   lightAtCamera = 1;
 
   constructor(private halls: Halls) {
     this.gridTex.magFilter = this.gridTex.minFilter = THREE.LinearFilter;
-    const mk = (map: THREE.Texture, panel: number): THREE.ShaderMaterial => {
+    this.mats = {
+      floor: this.material(carpetTexture(), 0), ceil: this.material(ceilingTexture(), 0), wall: this.material(wallpaperTexture(), 0),
+      panel: this.material(panelTexture(), 1), arrow: this.material(arrowTexture(), 2), exit: this.material(exitTexture(), 3),
+    };
+  }
+
+  /** Create a material lit by the level's light grid. mode: 0 surface, 2 alpha-tested decal, 3 emissive. */
+  material(map: THREE.Texture, panel: number): THREE.ShaderMaterial {
+    {
       const m = new THREE.ShaderMaterial({
         vertexShader: SURFACE_VERT,
         fragmentShader: SURFACE_FRAG,
@@ -86,11 +107,7 @@ export class WorldView {
       });
       this.materials.push(m);
       return m;
-    };
-    this.mats = {
-      floor: mk(carpetTexture(), 0), ceil: mk(ceilingTexture(), 0), wall: mk(wallpaperTexture(), 0),
-      panel: mk(panelTexture(), 1), arrow: mk(arrowTexture(), 2), exit: mk(exitTexture(), 3),
-    };
+    }
   }
 
   /** Surface material lit like the walls — reused for the entity, which is made of wallpaper. */
@@ -169,21 +186,72 @@ export class WorldView {
     }
   }
 
+  /**
+   * Precompute, for the grid window at (ox,oz), where each neon's light goes. Light spreads from
+   * cell to cell and is stopped by walls, so a dark room stays dark next to a lit corridor.
+   */
+  private buildSplats(ox: number, oz: number): void {
+    const h = this.halls, wall = this.wallBits, R = Math.ceil(LIGHT_REACH);
+    for (let gz = 0; gz < GRID; gz++) for (let gx = 0; gx < GRID; gx++) {
+      wall[gz * GRID + gx] = (h.wallN(ox + gx, oz + gz) ? 1 : 0) | (h.wallW(ox + gx, oz + gz) ? 2 : 0);
+    }
+    const seen = this.seen, queue = this.queue2;
+    let n = 0, lights = 0;
+    for (let gz = 0; gz < GRID; gz++) for (let gx = 0; gx < GRID; gx++) {
+      if (h.light(ox + gx, oz + gz) === LIGHT_NONE) continue;
+      const stamp = ++this.stamp, src = gz * GRID + gx;
+      this.lightCell[lights] = src;
+      this.splatStart[lights] = n;
+      let head = 0, tail = 0;
+      queue[tail++] = src;
+      seen[src] = stamp;
+      this.steps[src] = 0;
+      while (head < tail) {
+        const cur = queue[head++], x = cur % GRID, z = (cur - x) / GRID, st = this.steps[cur];
+        // Light that had to turn corners travelled farther than the straight distance.
+        const w = 1 - Math.max(Math.hypot(x - gx, z - gz), st * 0.85) / LIGHT_REACH;
+        if (w <= 0) continue;
+        if (n < this.splatCell.length) {
+          this.splatCell[n] = cur;
+          this.splatW[n++] = w * w;
+        }
+        if (st >= R + 1) continue;
+        const tryGo = (nx: number, nz: number, blocked: boolean): void => {
+          if (blocked || nx < 0 || nz < 0 || nx >= GRID || nz >= GRID) return;
+          const ni = nz * GRID + nx;
+          if (seen[ni] === stamp) return;
+          seen[ni] = stamp;
+          this.steps[ni] = st + 1;
+          queue[tail++] = ni;
+        };
+        tryGo(x, z - 1, (wall[cur] & 1) !== 0);
+        tryGo(x - 1, z, (wall[cur] & 2) !== 0);
+        tryGo(x, z + 1, z + 1 < GRID && (wall[cur + GRID] & 1) !== 0);
+        tryGo(x + 1, z, x + 1 < GRID && (wall[cur + 1] & 2) !== 0);
+      }
+      lights++;
+    }
+    this.splatStart[lights] = n;
+    this.lightCount = lights;
+  }
+
   /** Recompute the light grid centred on the camera. */
   private updateGrid(camX: number, camZ: number, time: number): void {
     const ox = Math.floor(camX / CELL) - GRID / 2, oz = Math.floor(camZ / CELL) - GRID / 2;
-    const acc = this.acc, R = Math.ceil(LIGHT_REACH), d = this.gridData, h = this.halls;
-    acc.fill(0.045);
-    for (let gz = 0; gz < GRID; gz++) for (let gx = 0; gx < GRID; gx++) {
-      const level = h.lightLevel(ox + gx, oz + gz, time);
-      d[(gz * GRID + gx) * 4 + 3] = level * 255;
+    if (ox !== this.gridOx || oz !== this.gridOz || this.lightCount < 0) {
+      this.gridOx = ox;
+      this.gridOz = oz;
+      this.buildSplats(ox, oz);
+    }
+    const acc = this.acc, d = this.gridData, h = this.halls;
+    acc.fill(AMBIENT);
+    for (let i = 0; i < GRID * GRID; i++) d[i * 4 + 3] = 0;
+    for (let l = 0; l < this.lightCount; l++) {
+      const cell = this.lightCell[l], gx = cell % GRID;
+      const level = h.lightLevel(ox + gx, oz + (cell - gx) / GRID, time);
+      d[cell * 4 + 3] = level * 255;
       if (level <= 0) continue;
-      for (let dz = -R; dz <= R; dz++) for (let dx = -R; dx <= R; dx++) {
-        const x = gx + dx, z = gz + dz;
-        if (x < 0 || z < 0 || x >= GRID || z >= GRID) continue;
-        const w = 1 - Math.hypot(dx, dz) / LIGHT_REACH;
-        if (w > 0) acc[z * GRID + x] += w * w * level * 0.42;
-      }
+      for (let k = this.splatStart[l], end = this.splatStart[l + 1]; k < end; k++) acc[this.splatCell[k]] += this.splatW[k] * level * 0.5;
     }
     for (let i = 0; i < GRID * GRID; i++) d[i * 4] = Math.min(255, acc[i] * 127.5);
     this.gridOrigin.set(ox, oz);

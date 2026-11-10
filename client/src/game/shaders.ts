@@ -111,6 +111,14 @@ void main() {
   col.r = texture2D(tScene, uv + c * ab * 2.0 + vec2(ab, 0.0)).r;
   col.g = texture2D(tScene, uv).g;
   col.b = texture2D(tScene, uv - c * ab * 2.0 - vec2(ab, 0.0)).b;
+  // Halation: bright neon panels bloom into the picture, like on a cheap camcorder sensor.
+  vec3 glow = vec3(0.0);
+  for (int i = 0; i < 6; i++) {
+    float a = float(i) * 1.0472;
+    vec2 dir = vec2(cos(a), sin(a) * uRes.x / uRes.y);
+    glow += max(texture2D(tScene, uv + dir * 0.016).rgb - 0.7, 0.0);
+  }
+  col += glow * 0.3;
   vec3 bleed = texture2D(tScene, uv - vec2(0.004, 0.0)).rgb + texture2D(tScene, uv - vec2(0.008, 0.0)).rgb;
   float luma = dot(col, vec3(0.299, 0.587, 0.114));
   vec3 chroma = mix(col - luma, bleed * 0.5 - dot(bleed * 0.5, vec3(0.299, 0.587, 0.114)), 0.45 * k);

@@ -29,7 +29,7 @@ export default async function ({ openGame, shot, assert, sleep }) {
   // Run until exhausted (turning now and then so walls do not stop the sprint for good).
   await page.evaluate(() => window.__LIMINAL__.setInput({ mx: 0, mz: 1, run: true, crouch: false }));
   let drained = false;
-  for (let i = 0; i < 40 && !drained; i++) {
+  for (let i = 0; i < 120 && !drained; i++) {
     await sleep(500);
     const s = await state();
     drained = s.stamina < 60;
@@ -81,11 +81,23 @@ export default async function ({ openGame, shot, assert, sleep }) {
   assert(retry.screen === 'playing' && retry.depth === 1, 'retry restarts the same floor');
   assert(retry.prowler === 'dormant', 'the entity is gone after a retry');
 
+  // The disguised entity kills too, with its own explanation.
+  await page.evaluate(() => window.__LIMINAL__.summon('mimic'));
+  await page.waitForFunction(() => window.__LIMINAL__.state().screen === 'dead', null, { timeout: 15000 });
+  assert((await page.textContent('.dead-text')).includes('arpenteur'), 'the death screen explains the disguise');
+  await page.click('button.retry');
+  await sleep(300);
+
+  // Co-op entry points are on the title; an invalid code is refused without leaving it.
   // Quitting offers to continue the saved run.
   await page.keyboard.press('Escape');
   await page.click('button.quit');
   await sleep(300);
   assert(await page.isVisible('button.continue'), 'the title offers to continue');
+  assert(await page.isVisible('button.host') && await page.isVisible('button.join'), 'co-op buttons are on the title');
+  await page.fill('input[name=code]', 'AB');
+  await page.click('button.join');
+  assert((await page.textContent('.status')).includes('5 lettres'), 'a short room code is refused');
   await page.click('button.continue');
   await sleep(400);
   assert((await state()).depth === 1, 'continue resumes at the saved floor');

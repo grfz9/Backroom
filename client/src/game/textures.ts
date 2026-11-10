@@ -183,3 +183,20 @@ export function exitTexture(): THREE.Texture {
     g.fillRect(40, 150, s - 80, 10);          // panic bar
   }, 66);
 }
+
+/** Grey coverall fabric of the surveyors. */
+export function suitTexture(): THREE.Texture {
+  return make(64, (g, s, r) => {
+    g.fillStyle = '#8b8f8a';
+    g.fillRect(0, 0, s, s);
+    speckle(g, s, r, 30);
+  }, 77);
+}
+
+/** Flat colour (camcorder body, record light). */
+export function flatTexture(color: string): THREE.Texture {
+  return make(4, (g, s) => {
+    g.fillStyle = color;
+    g.fillRect(0, 0, s, s);
+  }, 88);
+}

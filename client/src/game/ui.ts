@@ -29,6 +29,13 @@ const CSS = `
 #ui .stamina b { display: block; height: 100%; background: #e8e2c4; }
 #ui .stamina.low b { background: #ff5a4a; }
 #ui .fps { position: absolute; top: 12%; left: 5%; font-size: 12px; font-weight: 400; white-space: pre; text-shadow: none; background: rgba(0,0,0,.55); padding: 6px 8px; display: none; }
+#ui .row { display: flex; gap: 8px; width: min(340px, 80vw); }
+#ui .row input { width: 40%; min-width: 0; text-transform: uppercase; text-align: center; }
+#ui .row button { width: 60%; padding: 12px 8px; }
+#ui .status { min-height: 1.2em; font-size: 12px; letter-spacing: .1em; color: #ffb09a; text-align: center; }
+#ui .title { gap: 12px; }
+#ui .title .sub { margin-bottom: 10px; }
+#ui .room { position: absolute; top: 12%; right: 5%; text-align: right; letter-spacing: .12em; font-size: .8em; white-space: pre; }
 #ui .msg { position: absolute; top: 22%; left: 0; right: 0; text-align: center; letter-spacing: .25em; opacity: 0; transition: opacity 1.2s; white-space: pre-line; line-height: 1.8; }
 #ui .msg.on { opacity: 1; }
 #ui .screen p { max-width: 560px; text-align: center; line-height: 1.8; letter-spacing: .08em; font-size: 14px; opacity: .85; white-space: pre-line; margin: 0 16px; }
@@ -53,6 +60,8 @@ export function randomSeedText(): string {
 
 export interface UIHandlers {
   onStart(seedText: string): void;
+  onHost(seedText: string): void;
+  onJoin(code: string): void;
   /** Resume the saved run at its deepest floor. */
   onContinue(): void;
   onRetry(): void;
@@ -86,6 +95,7 @@ export class GameUI {
         <div class="stamina"><b></b></div>
         <div class="fps"></div>
         <div class="msg"></div>
+        <div class="room"></div>
       </div>
       <div class="screen dead">
         <h1 style="font-size:44px">SIGNAL PERDU</h1>
@@ -104,7 +114,10 @@ export class GameUI {
         <label>SEED<input type="text" name="seed" maxlength="40" autocomplete="off" spellcheck="false"></label>
         <button type="submit">ENTRER</button>
         <button type="button" class="continue" style="display:none"></button>
-        <div class="hint">ZQSD / WASD : se déplacer · Maj : courir · Ctrl ou C : s'accroupir · F : lampe<br>Échap : pause · F3 : compteur FPS</div>
+        <button type="button" class="host">CRÉER UN SALON (COOP)</button>
+        <div class="row"><input type="text" name="code" maxlength="5" placeholder="CODE" autocomplete="off" spellcheck="false"><button type="button" class="join">REJOINDRE</button></div>
+        <div class="status"></div>
+        <div class="hint">ZQSD / WASD : se déplacer · Maj : courir · Ctrl ou C : s'accroupir · F : lampe<br>V : couper le micro (coop) · Échap : pause · F3 : compteur FPS</div>
       </form>
       <div class="screen pause">
         <h1 style="font-size:48px">PAUSE</h1>
@@ -125,6 +138,12 @@ export class GameUI {
     this.fps = q('.fps');
     this.pauseSeed = q('.pause-seed');
     this.msg = q('.msg');
+    q('.host').addEventListener('click', () => handlers.onHost(this.seedInput.value.trim() || randomSeedText()));
+    q('.join').addEventListener('click', () => {
+      const code = (q<HTMLInputElement>('input[name=code]').value || '').trim().toUpperCase();
+      if (code.length === 5) handlers.onJoin(code);
+      else this.status('Le code du salon fait 5 lettres.');
+    });
     q('.retry').addEventListener('click', () => handlers.onRetry());
     q('.continue').addEventListener('click', () => handlers.onContinue());
     for (const c of ['.quit2', '.quit3']) q(c).addEventListener('click', () => handlers.onQuit());
@@ -149,6 +168,17 @@ export class GameUI {
     const b = this.root.querySelector('.continue') as HTMLElement;
     b.style.display = label ? '' : 'none';
     b.textContent = label ?? '';
+  }
+
+  /** Status line under the co-op buttons (connection progress, errors). */
+  status(text: string): void {
+    this.root.querySelector('.status')!.textContent = text;
+  }
+
+  /** Room code, player count and microphone state, shown in the HUD ('' in solo). */
+  room(text: string): void {
+    const el = this.root.querySelector('.room')!;
+    if (el.textContent !== text) el.textContent = text;
   }
 
   /** Fading message in the middle of the picture (objective, floor name). */

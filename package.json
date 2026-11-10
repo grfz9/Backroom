@@ -17,6 +17,7 @@
     "check": "npm run typecheck && npm run test"
   },
   "dependencies": {
+    "peerjs": "^1.5.5",
     "three": "^0.187.0",
     "ws": "^8.22.2"
   },
