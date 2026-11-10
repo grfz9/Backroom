@@ -1,0 +1,33 @@
+{
+  "name": "liminal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "LIMINAL — jeu d'horreur coop dans le navigateur (Three.js + Node.js), 100 % procédural.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "tsx watch --tsconfig server/tsconfig.json server/src/index.ts",
+    "start": "tsx --tsconfig server/tsconfig.json server/src/index.ts",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p shared && tsc -p client && tsc -p server",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "node tools/e2e/run.mjs",
+    "check": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "three": "^0.187.0",
+    "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/three": "^0.187.0",
+    "@types/ws": "^8.18.2",
+    "playwright": "1.63.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.7",
+    "vitest": "^5.1.0"
+  }
+}

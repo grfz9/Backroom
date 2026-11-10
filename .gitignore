@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.vite-cache/
+.claude/worktrees/
+.superpowers/
+tools/e2e/out/
+*.log
+.DS_Store
